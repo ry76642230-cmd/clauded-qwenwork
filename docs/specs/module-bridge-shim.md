@@ -95,7 +95,7 @@
 
 ## 约束
 
-- **不修改 app.asar / 不修改 SDK**；唯一外部改动是环境变量 `QODER_CLI_PATH`（通过 `pnpm apply` 写入 `HKCU\Environment`）。
+- **不修改 app.asar / 不修改 SDK**；唯一外部改动是环境变量 `QODER_CLI_PATH` + `QODERCLI_PATH`（通过 `pnpm apply` 写入 `HKCU\Environment`，两者需同时注册）。
 - 保持协议保守：无法翻译的帧宁可丢弃/报成功，不可把 control_request 原文写入 claude stdin。
 - 退出码：正常 0；claude 异常退出时同样以非 0 退出并输出 stderr 摘要（SDK 会包装为 QoderCliProcessError 上报）。
 - 信号透杀：shim 收到 SIGTERM/SIGINT 时必须 kill claude 子进程，避免孤儿进程。
@@ -109,13 +109,13 @@
 |---|---|
 | `src/bridge-shim.mjs` | 核心翻译层（参数翻译 + 控制协议应答 + 事件改写 + 台账） |
 | `src/bridge-shim.test.mjs` | 自动化测试（模拟 SDK 调用 shim，验证内部查询 + 真实会话多轮） |
-| `src/index.mjs` | `pnpm apply`/`pnpm unapply`：注册/撤销 `QODER_CLI_PATH` 环境变量（Windows 注册表 + WM_SETTINGCHANGE 广播） |
+| `src/index.mjs` | `pnpm apply`/`pnpm unapply`：注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量（Windows 注册表 + WM_SETTINGCHANGE 广播） |
 
 ### 环境变量
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `QODER_BRIDGE_CLAUDE` | 覆盖 `claude` 可执行文件路径 | `claude`（走 PATH 查找） |
+| `QODER_BRIDGE_CLAUDE` | 覆盖 `claude` 可执行文件路径 | `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`（绝对路径，因千问办公进程 PATH 不含 npm 全局目录） |
 | `QODER_BRIDGE_MODEL` | 强制指定 claude 模型别名 | 不设置（由 claude 自行选择） |
 | `CLAUDE_CODE_ENTRYPOINT` | shim 传给 claude 的标记（内部） | `qwenwork-bridge` |
 
@@ -129,12 +129,12 @@
 2. ✅ 依据样本校准 spec 的应答表与改写表。
 3. ✅ 实现 `src/bridge-shim.mjs`。
 4. ✅ 冒烟测试：`src/bridge-shim.test.mjs` 模拟 SDK 验证事件流。
-5. 待办：联调（设 `QODER_CLI_PATH` → 重启 app → 全流程验证）。
+5. 待办：联调（设 `QODER_CLI_PATH` → 重启 app → 全流程验证）。**已部分通过**（单轮会话成功），多轮/技能/回归待补。
 
 ## 验收标准
 
 - [x] 自动化测试通过（`node src/bridge-shim.test.mjs`：内部查询 + 真实会话多轮）。
-- [ ] 千问办公内发送任务：回复流式渲染，无报错弹窗。
+- [x] 千问办公内发送任务：回复流式渲染，无报错弹窗（2026-08-21 14:18 首条 ledger `is_error: false` 会话落地，cost $0.0477，18063ms）。
 - [ ] 多轮对话上下文连续（第二轮的 `--resume` 命中同一 claude 会话）。
 - [ ] 子代理调用在 UI 显示为 Agent 卡片（Task→Agent 映射生效）。
 - [ ] Bash/Edit/Write 等文件操作在 app 工作区可见可查。
@@ -171,6 +171,13 @@
 12. **`--verbose` 追加**：claude 2.x 要求（实测报错「requires --verbose」）。
 13. **spy 实验教训**：SDK 对 CLI 的退出码 0/41 语义敏感；spy/shim 被杀（SIGTERM）时需透杀子进程，否则 qoderclicn/claude 变孤儿。
 14. **台账**：`~/.qwenwork-bridge/ledger.jsonl` 已实测落盘（`total_cost_usd/num_turns/duration_ms/is_error/result_preview`）。
+
+## 联调校准记录（2026-08-21，真实千问办公联调）
+
+1. **双环境变量必须同时注册**：首次只注册 `QODER_CLI_PATH`（有下划线）时 shim 完全没被调用（`src/logs/` 目录为空）。解包 SDK 发现 App 壳层读 `QODER_CLI_PATH`，SDK 内核 `resolveExecutable()` 读 `QODERCLI_PATH`（无下划线）。两者一并注册后 shim 才被调用（详见 DECISIONS.md D6）。
+2. **`binaryPathComputed` 缓存**：App 启动时计算一次 CLI 路径后缓存，**必须杀干净所有 QwenWorkCN 进程完全重启**才能重读环境变量（DECISIONS.md D6 的更准确理解）。
+3. **claude 必须绝对路径**：shim 首次 spawn 时日志报 `spawn claude ENOENT`，千问办公进程的 PATH 不含 npm 全局 bin 目录。改为绝对路径 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` 后成功（详见 DECISIONS.md D7）。
+4. **首条成功会话**：sessionId `bfce2bb1-862a-4141-9229-3cca29fe6d6f`，cost $0.047655，1 turn，18063ms，`is_error: false`。
 
 ### 已通过的自测（src/bridge-shim.test.mjs）
 

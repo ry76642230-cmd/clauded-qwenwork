@@ -73,9 +73,12 @@ out/main/index.js（Electron 主进程，打包为 out/main/main.js）
 ```
 千问办公 UI（不变）
    └─ Electron 主进程（不变，asar 不动）
-        └─ qoder-agent-sdk ProcessTransport（环境变量 QODER_CLI_PATH 触发）
+        └─ qoder-agent-sdk ProcessTransport
+             （环境变量 QODER_CLI_PATH + QODERCLI_PATH 双注册触发；App 壳层读前者作为
+              options.pathToQoderCLIExecutable 传 SDK，优先级最高；SDK 内核备用读后者）
              └─ node src/bridge-shim.mjs（本工程，唯一改动点）
-                  ├─ 参数翻译/过滤 → spawn claude（优先 QODER_BRIDGE_CLAUDE，回退 PATH）
+                  ├─ 参数翻译/过滤 → spawn claude（绝对路径 %APPDATA%\npm\...\claude.exe，
+                  │   可被 QODER_BRIDGE_CLAUDE 覆盖）
                   ├─ stdin：control_request 拦截自答；用户消息透传
                   ├─ stdout：claude stream-json 事件改写（init 注入 protocol_version、
                   │   工具名映射）后回流 SDK
@@ -88,7 +91,7 @@ out/main/index.js（Electron 主进程，打包为 out/main/main.js）
 
 ```
 src/index.mjs（pnpm apply / pnpm unapply）
-   ├─ apply：reg add HKCU\Environment /v QODER_CLI_PATH → src/bridge-shim.mjs 绝对路径
+   ├─ apply：reg add HKCU\Environment /v QODER_CLI_PATH + QODERCLI_PATH → src/bridge-shim.mjs 绝对路径
    │         + WM_SETTINGCHANGE 广播（PowerShell P/Invoke SendMessageTimeout）
    └─ unapply：reg delete → 广播 → 千问办公重启后恢复原引擎
 ```

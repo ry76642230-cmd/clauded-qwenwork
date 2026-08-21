@@ -7,7 +7,10 @@ import { join, dirname } from 'node:path';
 
 const SHIM_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bridge-shim.mjs');
 const REG_KEY = 'HKCU\\Environment';
-const REG_VAL = 'QODER_CLI_PATH';
+// App 壳层 (main.js getBundledQoderCliPath) 读 QODER_CLI_PATH；
+// SDK 内核 (resolveExecutable) 读 QODERCLI_PATH（无下划线）。
+// 两者必须同时注册，否则 shim 不会被调用。
+const REG_VALS = ['QODER_CLI_PATH', 'QODERCLI_PATH'];
 
 const broadcastSettingChange = () => {
   try {
@@ -27,9 +30,9 @@ const broadcastSettingChange = () => {
   }
 };
 
-const getCurrentValue = () => {
+const getCurrentValue = (name) => {
   try {
-    const out = execSync(`reg query "${REG_KEY}" /v ${REG_VAL}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = execSync(`reg query "${REG_KEY}" /v ${name}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const m = out.match(/REG_(?:EXPAND_)?SZ\s+(.*)/);
     return m?.[1]?.trim() ?? null;
   } catch {
@@ -37,28 +40,35 @@ const getCurrentValue = () => {
   }
 };
 
+const setReg = (name, value) =>
+  execSync(`reg add "${REG_KEY}" /v ${name} /t REG_SZ /d "${value}" /f`, { stdio: 'inherit' });
+const delReg = (name) =>
+  execSync(`reg delete "${REG_KEY}" /v ${name} /f 2>nul`, { stdio: 'ignore' });
+
 const apply = () => {
-  const existing = getCurrentValue();
-  if (existing === SHIM_PATH) {
-    console.log(`值未变，覆盖写入:\n  QODER_CLI_PATH=${SHIM_PATH}`);
-  } else if (existing) {
-    console.log(`替换旧值:\n  旧: ${existing}\n  新: ${SHIM_PATH}`);
+  for (const name of REG_VALS) {
+    const existing = getCurrentValue(name);
+    if (existing === SHIM_PATH) {
+      console.log(`值未变，覆盖写入: ${name}=${SHIM_PATH}`);
+    } else if (existing) {
+      console.log(`替换旧值: ${name}\n  旧: ${existing}\n  新: ${SHIM_PATH}`);
+    }
+    setReg(name, SHIM_PATH);
   }
-  execSync(`reg add "${REG_KEY}" /v ${REG_VAL} /t REG_SZ /d "${SHIM_PATH}" /f`, { stdio: 'inherit' });
   broadcastSettingChange();
-  console.log(`\n已注册:\n  QODER_CLI_PATH=${SHIM_PATH}`);
+  console.log(`\n已注册:`);
+  for (const name of REG_VALS) console.log(`  ${name}=${SHIM_PATH}`);
   console.log('重启千问办公即可生效。');
 };
 
 const unapply = () => {
-  const existing = getCurrentValue();
-  if (!existing) {
-    console.log('未注册，无需撤销。');
-    return;
+  let removed = 0;
+  for (const name of REG_VALS) {
+    if (getCurrentValue(name)) { delReg(name); removed++; }
   }
-  execSync(`reg delete "${REG_KEY}" /v ${REG_VAL} /f`, { stdio: 'inherit' });
+  if (removed === 0) { console.log('未注册，无需撤销。'); return; }
   broadcastSettingChange();
-  console.log('已撤销 QODER_CLI_PATH，重启千问办公恢复原引擎。');
+  console.log(`已撤销 ${removed} 个环境变量，重启千问办公恢复原引擎。`);
 };
 
 const cmd = process.argv[2];
@@ -66,6 +76,6 @@ if (cmd === 'apply') apply();
 else if (cmd === 'unapply') unapply();
 else {
   console.log('用法:');
-  console.log('  pnpm apply    注册 QODER_CLI_PATH → 千问办公走 Claude Code');
-  console.log('  pnpm unapply  撤销 QODER_CLI_PATH → 恢复原引擎');
+  console.log('  pnpm apply    注册 QODER_CLI_PATH + QODERCLI_PATH → 千问办公走 Claude Code');
+  console.log('  pnpm unapply  撤销两个变量 → 恢复原引擎');
 }

@@ -6,7 +6,7 @@
 
 ## Agent 如何理解这个项目
 
-- 核心挂点：**`QODER_CLI_PATH` 环境变量**（用户级，写入 `HKCU\Environment`）。设置后，千问办公主进程（`out/main/main.js`）与 `@qoder-ai/qoder-agent-sdk` 会把所有 Agent 查询改为 spawn 外部 CLI；若该路径以 `.js/.mjs` 结尾，SDK 会用 `node <path>` 执行——因此翻译层是一个 Node 脚本，无需编译。
+- 核心挂点：**`QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量**（用户级，写入 `HKCU\Environment`）。两者必须同时注册——App 壳层 `main.js` 的 `getBundledQoderCliPath()` 读前者，SDK 内核的 `resolveExecutable()` 读后者。设置后，千问办公主进程与 `@qoder-ai/qoder-agent-sdk` 会把所有 Agent 查询改为 spawn 外部 CLI；若该路径以 `.js/.mjs` 结尾，SDK 会用 `node <path>` 执行——因此翻译层是一个 Node 脚本，无需编译。
 - 安装/卸载：`pnpm apply` 通过 `reg add` 写入注册表并 `WM_SETTINGCHANGE` 广播；`pnpm unapply` 撤销。详见 `src/index.mjs`。
 - 协议面：SDK ↔ CLI 走 JSONL 流（`--output-format stream-json`），其上叠加了 qoder 特有的 `control_request`/`control_response` 控制协议与 `system/init` 握手（`protocol_version`，major 必须为 1）。CLI 是 Claude Code CLI 的 fork，参数与事件结构同构，但存在差异清单（见 `docs/ARCHITECTURE.md` 与 spec）。
 - 原始素材：本机 `C:\Program Files\QwenWorkCN\0.1.8-26081406\`（app.asar 已解包分析，可随时重新解包）。
@@ -38,6 +38,7 @@ src/
 
 ## 全局规则
 
-- 千问办公每次更新后需重新核对：`QODER_CLI_PATH` 挂点是否仍生效（app 版本目录变化不影响环境变量机制，但需抽查）。
-- `claude` 可执行文件优先走 `PATH` 查找，`QODER_BRIDGE_CLAUDE` 环境变量可显式覆盖。
+- 千问办公每次更新后需重新核对：环境变量挂点是否仍生效（app 版本目录变化不影响环境变量机制，但需抽查）。
+- `claude` 可执行文件路径：**千问办公进程的 `PATH` 通常不含 npm 全局目录**，因此 `QODER_BRIDGE_CLAUDE` 默认走绝对路径 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`；也可显式覆盖。
+- 排查 shim 是否被调用：看 `src/logs/` 目录是否有新日志文件。
 - 所有文档遵循本仓库结构与 CLAUDE.md 的全局文档规范。

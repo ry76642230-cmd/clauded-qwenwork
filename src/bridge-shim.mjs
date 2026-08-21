@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
 // ---------- 配置 ----------
-const CLAUDE_BIN = process.env.QODER_BRIDGE_CLAUDE ?? 'claude';
+// claude.exe 完整路径——千问办公进程的 PATH 通常不含 npm 全局目录，必须绝对路径
+const CLAUDE_BIN = process.env.QODER_BRIDGE_CLAUDE
+  ?? join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
 const BRIDGE_MODEL = process.env.QODER_BRIDGE_MODEL; // 可选：强制指定 claude 模型
 const PROTOCOL_VERSION = '1.2.0';
 const LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), 'logs');

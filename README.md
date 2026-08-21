@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-- 2026-08-21：**探索完成 + 首版实现完成**，bridge shim 已编写（`src/bridge-shim.mjs`），注册/撤销工具已就绪（`src/index.mjs`），自动化测试已通过（`src/bridge-shim.test.mjs`）。
+- 2026-08-21：**探索完成 + 首版实现 + 端到端联调通过**。bridge shim 已编写（`src/bridge-shim.mjs`），注册/撤销工具已就绪（`src/index.mjs`），自动化测试与真实千问办公联调均已通过（ledger 首条 `is_error: false` 会话落地）。
 - Spy 阶段已完成，协议样本已用于校准实现。
-- 待持续验证：联调千问办公全流程、技能复用、新版本回归。
+- 待持续验证：技能复用、多轮会话稳定性、千问办公新版本回归。
 
 ## 如何安装和运行
 
@@ -47,8 +47,12 @@ pnpm unapply
 
 | 变量 | 说明 |
 |---|---|
-| `QODER_BRIDGE_CLAUDE` | 覆盖 `claude` 可执行文件路径（默认走 `PATH` 查找） |
+| `QODER_BRIDGE_CLAUDE` | 覆盖 `claude` 可执行文件路径（默认走 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，因千问办公进程的 `PATH` 通常不含 npm 全局目录） |
 | `QODER_BRIDGE_MODEL` | 强制指定 claude 模型别名（默认不指定，由 claude 自行选择） |
+
+> **踩坑提示喵～** 若首次 `pnpm apply` 后千问办公仍走原引擎，请确认两件事：
+> 1. 杀干净所有 `QwenWorkCN.exe` 进程再启动（app 有 `binaryPathComputed` 缓存，仅完全重启才会重读环境变量）；
+> 2. shim 的 `src/logs/` 目录若为空 = shim 从未被调用，说明环境变量没生效（用 `reg query HKCU\Environment` 核对 `QODER_CLI_PATH` / `QODERCLI_PATH` 两个都要在）。
 
 ## 核心技术
 

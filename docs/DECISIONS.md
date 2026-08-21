@@ -67,3 +67,17 @@
 - 问题：SDK 会为「模型列表」「闲置建议生成」「意图分类」等内部查询频繁 spawn CLI，每次都走 claude 会烧 token。
 - 方案：检测 `--bare` 或 `--disallowed-tools *` 特征，shim 直接进入内部模式（`runInternal()`），本地合成 `initialize` + `get_models` 应答后等 stdin EOF 退出，不 spawn claude。
 - 影响：节省 70%+ 的无效 spawn；若 app 依赖真实分类结果导致功能异常，可改为透传（预留开关）。
+
+## D6：双环境变量注册（`QODER_CLI_PATH` + `QODERCLI_PATH`）
+
+- **问题**：首次联调时只注册了 `QODER_CLI_PATH`（有下划线），千问办公启动后 shim 完全没被调用（`src/logs/` 目录为空）。
+- **排查**：解包 SDK 源码发现存在两层解析——App 壳层 `main.js` 的 `getBundledQoderCliPath()` 读 `QODER_CLI_PATH`，返回值作为 `options.pathToQoderCLIExecutable` 传给 SDK；SDK 内核 `resolveExecutable()` 内部用 `G()` 函数读取 `QODERCLI_PATH`（无下划线）。两者必须同时命中才能确保 shim 被调用。
+- **方案**：`src/index.mjs` 改为循环注册两个变量，`apply`/`unapply` 一并对两个名字操作。
+- **更准确的理解**（后续分析）：实际上 App 壳层以 SDK option 形式传入，**优先级最高**——理论上 `QODER_CLI_PATH` 一个就够；`QODERCLI_PATH` 作为双保险保留。首次失败的真实原因是 `binaryPathComputed` 缓存未清（需杀干净所有 QwenWorkCN 进程完全重启）。
+- **影响**：双注册带来轻微冗余，但降低未来版本 SDK 行为变更时的风险。
+
+## D7：claude 可执行文件走绝对路径（非 PATH）
+
+- **问题**：环境变量注册后 shim 被调用了，但日志显示 `spawn claude ENOENT`——shim 用 `spawn('claude')` 走 PATH 查找，但千问办公进程的 PATH 不含 npm 全局 bin 目录（`%APPDATA%\npm`）。
+- **方案**：`bridge-shim.mjs` 的 `CLAUDE_BIN` 默认值改为绝对路径 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`（npm 全局安装的标准位置），仍可通过 `QODER_BRIDGE_CLAUDE` 覆盖。
+- **影响**：若主人改过 npm 全局前缀（`npm config set prefix`）或用 pnpm global 等非默认安装方式，需手动设置 `QODER_BRIDGE_CLAUDE`。

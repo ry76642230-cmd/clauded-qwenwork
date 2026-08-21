@@ -28,7 +28,7 @@
 | 会话 ID 直通 | `src/bridge-shim.mjs` | `--session-id`/`--resume` 原样传给 claude，多轮上下文连续 |
 | 技能复用 | 手动操作 | 千问内置 SKILL.md（docx/pptx/xlsx/pdf 等）复制进 `~/.claude/skills/`，Claude 直接调用 |
 | 成本台账 | `src/bridge-shim.mjs` | 每次运行 `result.total_cost_usd` 追加到 `~/.qwenwork-bridge/ledger.jsonl`，主人可查每次任务花费 |
-| 注册/撤销工具 | `src/index.mjs` | `pnpm apply`/`pnpm unapply` 一键注册/撤销 `QODER_CLI_PATH` 环境变量 |
+| 注册/撤销工具 | `src/index.mjs` | `pnpm apply`/`pnpm unapply` 一键注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量 |
 
 ### 功能之间的关系
 
