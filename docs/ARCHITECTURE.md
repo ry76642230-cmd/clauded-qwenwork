@@ -76,9 +76,10 @@ out/main/index.js（Electron 主进程，打包为 out/main/main.js）
         └─ qoder-agent-sdk ProcessTransport
              （环境变量 QODER_CLI_PATH + QODERCLI_PATH 双注册触发；App 壳层读前者作为
               options.pathToQoderCLIExecutable 传 SDK，优先级最高；SDK 内核备用读后者）
-             └─ node src/bridge-shim.mjs（本工程，唯一改动点）
-                  ├─ 参数翻译/过滤 → spawn claude（绝对路径 %APPDATA%\npm\...\claude.exe，
-                  │   可被 QODER_BRIDGE_CLAUDE 覆盖）
+             ├─ Windows: node src/bridge-shim.mjs（SDK 自动识别 .mjs 后缀，用 node 执行）
+             └─ macOS:   src/bridge-shim-wrapper.sh → node src/bridge-shim.mjs
+                  ├─ 参数翻译/过滤 → spawn claude（Windows: %APPDATA%\npm\...\claude.exe
+                  │   macOS: /opt/homebrew/bin/claude，可被 QODER_BRIDGE_CLAUDE 覆盖）
                   ├─ stdin：control_request 拦截自答；用户消息透传
                   ├─ stdout：claude stream-json 事件改写（init 注入 protocol_version、
                   │   工具名映射）后回流 SDK
@@ -90,10 +91,20 @@ out/main/index.js（Electron 主进程，打包为 out/main/main.js）
 ### 辅助工具
 
 ```
-src/index.mjs（pnpm apply / pnpm unapply）
-   ├─ apply：reg add HKCU\Environment /v QODER_CLI_PATH + QODERCLI_PATH → src/bridge-shim.mjs 绝对路径
-   │         + WM_SETTINGCHANGE 广播（PowerShell P/Invoke SendMessageTimeout）
-   └─ unapply：reg delete → 广播 → 千问办公重启后恢复原引擎
+src/index.mjs（pnpm apply / pnpm unapply，跨平台）
+   ├─ Windows:
+   │   ├─ apply：reg add HKCU\Environment /v QODER_CLI_PATH + QODERCLI_PATH → src/bridge-shim.mjs 绝对路径
+   │   │         + WM_SETTINGCHANGE 广播（PowerShell P/Invoke SendMessageTimeout）
+   │   └─ unapply：reg delete → 广播 → 千问办公重启后恢复原引擎
+   └─ macOS:
+       ├─ apply：launchctl setenv QODER_CLI_PATH + QODERCLI_PATH → src/bridge-shim-wrapper.sh 绝对路径
+       │         + 写入 ~/.zshrc（带 # clauded-qwenwork 标记）
+       └─ unapply：launchctl unsetenv → 清理 shell profile → 千问办公重启后恢复原引擎
+
+src/bridge-shim-wrapper.sh（macOS 专用 shell wrapper）
+   ├─ 被 QODER_CLI_PATH 指向（替代 .mjs 文件）
+   ├─ 探测 node 绝对路径（/opt/homebrew/bin/node 等），绕过 SDK PATH 限制
+   └─ exec node bridge-shim.mjs 启动真正的翻译层
 ```
 
 ### 数据流（一次任务）

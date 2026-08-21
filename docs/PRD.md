@@ -23,12 +23,13 @@
 | 功能 | 实现文件 | 意义 |
 |---|---|---|
 | Bridge shim（Node 翻译层） | `src/bridge-shim.mjs` | 承接 SDK 的 spawn 参数与 JSONL 流，翻译为 claude 协议，双向改写 |
+| macOS shell wrapper | `src/bridge-shim-wrapper.sh` | 绕过 SDK PATH 限制，探测 node 绝对路径 |
 | 控制协议应答 | `src/bridge-shim.mjs` | 应答 SDK 的 `control_request`（initialize/get_models/get_context_usage/generate_session_title/interrupt 等），保证 UI 不崩 |
 | 内部查询自答 | `src/bridge-shim.mjs` | 模型列表/闲置建议等内部查询本地合成应答，不消耗 token |
 | 会话 ID 直通 | `src/bridge-shim.mjs` | `--session-id`/`--resume` 原样传给 claude，多轮上下文连续 |
 | 技能复用 | 手动操作 | 千问内置 SKILL.md（docx/pptx/xlsx/pdf 等）复制进 `~/.claude/skills/`，Claude 直接调用 |
 | 成本台账 | `src/bridge-shim.mjs` | 每次运行 `result.total_cost_usd` 追加到 `~/.qwenwork-bridge/ledger.jsonl`，主人可查每次任务花费 |
-| 注册/撤销工具 | `src/index.mjs` | `pnpm apply`/`pnpm unapply` 一键注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量 |
+| 注册/撤销工具 | `src/index.mjs` | `pnpm apply`/`pnpm unapply` 一键注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量（跨平台） |
 
 ### 功能之间的关系
 

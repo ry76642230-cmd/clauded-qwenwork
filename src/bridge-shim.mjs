@@ -6,17 +6,39 @@
 //   1. 内部查询（模型列表/闲置建议）→ 本地自答，不消耗 token
 //   2. 真实会话 → 参数翻译后 spawn claude，双向翻译协议
 //   3. 应答 SDK 的 control_request；改写 claude 事件；记账
-import { spawn } from 'node:child_process';
+import { spawn, execSync as _execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 
 // ---------- 配置 ----------
-// claude.exe 完整路径——千问办公进程的 PATH 通常不含 npm 全局目录，必须绝对路径
-const CLAUDE_BIN = process.env.QODER_BRIDGE_CLAUDE
-  ?? join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+// claude 可执行文件路径——千问办公进程的 PATH 通常不含 npm 全局目录，尽量用绝对路径
+// 优先 QODER_BRIDGE_CLAUDE 显式覆盖；否则按平台猜默认位置
+const DEFAULT_CLAUDE_BIN = (() => {
+  if (platform() === 'win32') {
+    return join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+  }
+  // macOS / Linux：优先 npm 全局前缀下的标准位置，回退到 PATH 上的 claude
+  let npmPrefix = '';
+  try { npmPrefix = _execSync('npm prefix -g', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+  if (npmPrefix) {
+    const candidate = join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude');
+    if (existsSync(candidate)) return candidate;
+  }
+  // 常见全局路径硬编码回退（Homebrew Node 等）
+  for (const p of [
+    '/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
+    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
+    join(homedir(), '.npm-global', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude'),
+  ]) {
+    if (existsSync(p)) return p;
+  }
+  // 回退到 PATH 查找（macOS 终端启动千问办公时 PATH 含 /usr/local/bin 等）
+  return 'claude';
+})();
+const CLAUDE_BIN = process.env.QODER_BRIDGE_CLAUDE ?? DEFAULT_CLAUDE_BIN;
 const BRIDGE_MODEL = process.env.QODER_BRIDGE_MODEL; // 可选：强制指定 claude 模型
 const PROTOCOL_VERSION = '1.2.0';
 const LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), 'logs');

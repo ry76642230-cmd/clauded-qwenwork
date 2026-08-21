@@ -95,11 +95,14 @@
 
 ## 约束
 
-- **不修改 app.asar / 不修改 SDK**；唯一外部改动是环境变量 `QODER_CLI_PATH` + `QODERCLI_PATH`（通过 `pnpm apply` 写入 `HKCU\Environment`，两者需同时注册）。
+- **不修改 app.asar / 不修改 SDK**；唯一外部改动是环境变量 `QODER_CLI_PATH` + `QODERCLI_PATH`（跨平台注册）。
 - 保持协议保守：无法翻译的帧宁可丢弃/报成功，不可把 control_request 原文写入 claude stdin。
 - 退出码：正常 0；claude 异常退出时同样以非 0 退出并输出 stderr 摘要（SDK 会包装为 QoderCliProcessError 上报）。
 - 信号透杀：shim 收到 SIGTERM/SIGINT 时必须 kill claude 子进程，避免孤儿进程。
 - 兼容性：进程可能被并发 spawn（主对话 + 内部查询），shim 无状态或按 `--session-id` 分文件存储。
+- **跨平台**：
+  - Windows: `QODER_CLI_PATH` 指向 `.mjs` 文件（SDK 自动识别并用 node 执行）。
+  - macOS: `QODER_CLI_PATH` 指向 `.sh` wrapper（绕过 SDK PATH 限制，wrapper 内部探测 node 绝对路径）。
 
 ## 实现与测试
 
@@ -108,15 +111,17 @@
 | 文件 | 职责 |
 |---|---|
 | `src/bridge-shim.mjs` | 核心翻译层（参数翻译 + 控制协议应答 + 事件改写 + 台账） |
+| `src/bridge-shim-wrapper.sh` | macOS shell wrapper（绕过 SDK PATH 限制，探测 node 绝对路径） |
 | `src/bridge-shim.test.mjs` | 自动化测试（模拟 SDK 调用 shim，验证内部查询 + 真实会话多轮） |
-| `src/index.mjs` | `pnpm apply`/`pnpm unapply`：注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量（Windows 注册表 + WM_SETTINGCHANGE 广播） |
+| `src/index.mjs` | `pnpm apply`/`pnpm unapply`：注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量（跨平台：Windows 注册表 + macOS launchctl） |
 
 ### 环境变量
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `QODER_BRIDGE_CLAUDE` | 覆盖 `claude` 可执行文件路径 | `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`（绝对路径，因千问办公进程 PATH 不含 npm 全局目录） |
+| `QODER_BRIDGE_CLAUDE` | 覆盖 `claude` 可执行文件路径 | Windows: `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`；macOS: 自动探测 npm prefix 或常见路径 |
 | `QODER_BRIDGE_MODEL` | 强制指定 claude 模型别名 | 不设置（由 claude 自行选择） |
+| `QODER_BRIDGE_NODE` | macOS 专用：覆盖 node 可执行文件路径 | 自动探测 `/opt/homebrew/bin/node` 等常见路径 |
 | `CLAUDE_CODE_ENTRYPOINT` | shim 传给 claude 的标记（内部） | `qwenwork-bridge` |
 
 ### 运行日志
@@ -129,7 +134,8 @@
 2. ✅ 依据样本校准 spec 的应答表与改写表。
 3. ✅ 实现 `src/bridge-shim.mjs`。
 4. ✅ 冒烟测试：`src/bridge-shim.test.mjs` 模拟 SDK 验证事件流。
-5. 待办：联调（设 `QODER_CLI_PATH` → 重启 app → 全流程验证）。**已部分通过**（单轮会话成功），多轮/技能/回归待补。
+5. ✅ **macOS 平台适配**：新增 `bridge-shim-wrapper.sh`，解决 SDK PATH 限制导致 spawn 失败的问题。
+6. 待办：联调（设 `QODER_CLI_PATH` → 重启 app → 全流程验证）。**已部分通过**（单轮会话成功），多轮/技能/回归待补。
 
 ## 验收标准
 
@@ -176,8 +182,9 @@
 
 1. **双环境变量必须同时注册**：首次只注册 `QODER_CLI_PATH`（有下划线）时 shim 完全没被调用（`src/logs/` 目录为空）。解包 SDK 发现 App 壳层读 `QODER_CLI_PATH`，SDK 内核 `resolveExecutable()` 读 `QODERCLI_PATH`（无下划线）。两者一并注册后 shim 才被调用（详见 DECISIONS.md D6）。
 2. **`binaryPathComputed` 缓存**：App 启动时计算一次 CLI 路径后缓存，**必须杀干净所有 QwenWorkCN 进程完全重启**才能重读环境变量（DECISIONS.md D6 的更准确理解）。
-3. **claude 必须绝对路径**：shim 首次 spawn 时日志报 `spawn claude ENOENT`，千问办公进程的 PATH 不含 npm 全局 bin 目录。改为绝对路径 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` 后成功（详见 DECISIONS.md D7）。
-4. **首条成功会话**：sessionId `bfce2bb1-862a-4141-9229-3cca29fe6d6f`，cost $0.047655，1 turn，18063ms，`is_error: false`。
+3. **claude 必须绝对路径**：shim 首次 spawn 时日志报 `spawn claude ENOENT`，千问办公进程的 PATH 不含 npm 全局 bin 目录。改为绝对路径（Windows: `%APPDATA%\npm\...\claude.exe`；macOS: 自动探测）后成功（详见 DECISIONS.md D7）。
+4. **macOS PATH 限制**：SDK 的 `buildQoderAgentSdkRuntimeEnv` 把 PATH 硬编码为 `/usr/bin:/bin:/usr/sbin:/sbin`，不含 `/opt/homebrew/bin`，导致 `.mjs` 文件 spawn 时报 "executable not found"。新增 shell wrapper 探测 node 绝对路径后解决（详见 DECISIONS.md D8）。
+5. **首条成功会话**：sessionId `bfce2bb1-862a-4141-9229-3cca29fe6d6f`，cost $0.047655，1 turn，18063ms，`is_error: false`。
 
 ### 已通过的自测（src/bridge-shim.test.mjs）
 

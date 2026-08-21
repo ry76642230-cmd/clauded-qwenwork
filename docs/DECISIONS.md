@@ -56,11 +56,13 @@
 - 实测调整：**继承 SDK 传入的 cwd**（app 工作区目录，如 `~\.qwenworkcn\workspace\<chatId>`），让 claude 直接落在千问办公的工作流路径上，无需额外映射。
 - 影响：agent 执行 Bash/Edit/Write 默认落在 app 工作区，与千问 UI 的文件操作一致；如需操作其他目录，通过 `--add-dir` 或 claude 既有权限配置放行。
 
-## D4：环境变量挂点用 Windows 注册表（HKCU\Environment）
+## D4：环境变量挂点用跨平台方案（Windows 注册表 / macOS launchctl + shell profile）
 
-- 问题：要让千问办公（图形应用）能读到 `QODER_CLI_PATH`，需要用户级环境变量；手动设置麻烦且易错。
-- 方案：`src/index.mjs` 通过 `reg add HKCU\Environment /v QODER_CLI_PATH` 写入，并用 PowerShell P/Invoke `SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, ...)` 广播变更，让新启动的 Electron 进程能读到。
-- 影响：`pnpm apply`/`pnpm unapply` 一键切换；无需管理员权限（用户级注册表）；需重启千问办公生效。
+- **问题**：要让千问办公（图形应用）能读到 `QODER_CLI_PATH`，需要用户级环境变量；手动设置麻烦且易错。
+- **方案**：
+  - **Windows**: `src/index.mjs` 通过 `reg add HKCU\Environment /v QODER_CLI_PATH` 写入，并用 PowerShell P/Invoke `SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, ...)` 广播变更，让新启动的 Electron 进程能读到。
+  - **macOS**: `launchctl setenv` 立即生效 + 写入 `~/.zshrc`（带 `# clauded-qwenwork` 标记）确保新终端窗口也能继承。
+- **影响**：`pnpm apply`/`pnpm unapply` 一键切换；无需管理员权限（用户级注册表 / launchd）；需重启千问办公生效。
 
 ## D5：内部查询本地自答（省 token 优化）
 
@@ -78,6 +80,45 @@
 
 ## D7：claude 可执行文件走绝对路径（非 PATH）
 
-- **问题**：环境变量注册后 shim 被调用了，但日志显示 `spawn claude ENOENT`——shim 用 `spawn('claude')` 走 PATH 查找，但千问办公进程的 PATH 不含 npm 全局 bin 目录（`%APPDATA%\npm`）。
-- **方案**：`bridge-shim.mjs` 的 `CLAUDE_BIN` 默认值改为绝对路径 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`（npm 全局安装的标准位置），仍可通过 `QODER_BRIDGE_CLAUDE` 覆盖。
+- **问题**：环境变量注册后 shim 被调用了，但日志显示 `spawn claude ENOENT`——shim 用 `spawn('claude')` 走 PATH 查找，但千问办公进程的 PATH 不含 npm 全局 bin 目录（Windows: `%APPDATA%\npm`）。
+- **方案**：`bridge-shim.mjs` 的 `CLAUDE_BIN` 默认值改为绝对路径（Windows: `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`；macOS: 自动探测 npm prefix 或常见路径），仍可通过 `QODER_BRIDGE_CLAUDE` 覆盖。
 - **影响**：若主人改过 npm 全局前缀（`npm config set prefix`）或用 pnpm global 等非默认安装方式，需手动设置 `QODER_BRIDGE_CLAUDE`。
+
+## D8：macOS 平台适配——shell wrapper 绕过 PATH 限制
+
+### 当时遇到的问题
+
+`pnpm apply` 在 macOS 上注册环境变量后，千问办公启动时报错 **"Qoder CLI executable not found"**。环境变量 `QODER_CLI_PATH` 指向 `.mjs` 文件，SDK 应该自动识别并用 `node` 执行，但实际 spawn 失败。
+
+### 排查过程
+
+1. 检查日志发现 SDK 的 `buildQoderAgentSdkRuntimeEnv` 把 PATH 硬编码为 `/Users/xrl/.qwenworkcn/bin:/usr/bin:/bin:/usr/sbin:/sbin`。
+2. **不包含 `/opt/homebrew/bin`**——所以即使 shell 里有 node，spawn 时也找不到。
+3. 即使 `.mjs` 文件有 shebang `#!/usr/bin/env node`，env 也找不到 node。
+
+### 方案选择
+
+| 方案 | 优点 | 缺点 | 结论 |
+|---|---|---|---|
+| A. 修改 SDK 的 PATH 注入逻辑 | 彻底解决 | 违反「不改 SDK」原则；每次 app 更新失效 | 否 |
+| B. 用户手动配置 `QODER_BRIDGE_NODE` | 灵活 | 增加用户配置负担；容易遗漏 | 否 |
+| C. shell wrapper 硬编码常见 node 路径 | 零配置；自动探测；兼容多种安装方式 | 需要额外文件 | **选此项** |
+| D. 修改 `~/.zshrc` 把 node 路径加入全局 PATH | 一劳永逸 | 影响用户 shell 环境；不优雅 | 否 |
+
+### 为什么选择 C
+
+- shell wrapper 用 `#!/bin/sh`，系统路径能找到 sh。
+- wrapper 内部按优先级探测 node：`QODER_BRIDGE_NODE` 环境变量 > `/opt/homebrew/bin/node`（Homebrew）> `/usr/local/bin/node` > 其他常见路径 > PATH 回退。
+- 兼容 npm 全局安装、Homebrew、nvm、volta、fnm、bun 等多种 node 安装方式。
+- 不修改 SDK、不修改用户 shell 环境、不增加配置负担。
+
+### 影响
+
+- macOS 平台的 `QODER_CLI_PATH` 指向 `bridge-shim-wrapper.sh` 而不是 `.mjs` 文件。
+- Windows 平台不受影响，仍指向 `.mjs` 文件。
+- 新增文件 `src/bridge-shim-wrapper.sh`，需设为可执行权限。
+
+### 何时重新考虑
+
+- SDK 修复 PATH 注入逻辑，包含常见 node 安装路径。
+- 千问办公官方提供环境变量白名单机制。
