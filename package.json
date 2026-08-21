@@ -1,0 +1,9 @@
+{
+  "name": "clauded-qwenwork",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "apply": "node src/index.mjs apply",
+    "unapply": "node src/index.mjs unapply"
+  }
+}
