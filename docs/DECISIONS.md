@@ -63,6 +63,7 @@
   - **Windows**: `src/index.mjs` 通过 `reg add HKCU\Environment /v QODER_CLI_PATH` 写入，并用 PowerShell P/Invoke `SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, ...)` 广播变更，让新启动的 Electron 进程能读到。
   - **macOS**: `launchctl setenv` 立即生效 + 写入 `~/.zshrc`（带 `# clauded-qwenwork` 标记）确保新终端窗口也能继承。
 - **影响**：`pnpm apply`/`pnpm unapply` 一键切换；无需管理员权限（用户级注册表 / launchd）；需重启千问办公生效。
+- **已更新**：macOS 部分已被 D9 取代（改用 `LSEnvironment`），本条目仅保留历史背景。
 
 ## D5：内部查询本地自答（省 token 优化）
 
@@ -122,3 +123,21 @@
 
 - SDK 修复 PATH 注入逻辑，包含常见 node 安装路径。
 - 千问办公官方提供环境变量白名单机制。
+
+## D9：macOS 环境变量改用 LSEnvironment（弃用 launchctl + shell profile）
+
+> **已更新（2026-08-22）**：macOS 部分已被 D10 取代（改用 LaunchAgent），本条目仅保留历史背景。
+
+- **问题**：D4 的 macOS 方案有缺陷——`launchctl setenv` 不持久化，重启后 launchd 环境被清空，从 Dock/Finder（GUI 方式）启动的千问办公读不到变量而桥接失效；写入 `~/.zshrc` 虽能持久化，但会污染用户 shell 环境，且 GUI 启动的 App 根本不读 shell profile，两者都治标不治本。
+- **方案**：改用 `defaults write cn.qwenwork.desktop.mac LSEnvironment -dict QODER_CLI_PATH=... QODERCLI_PATH=...`。LaunchServices 每次启动 App 时读取该键并注入进程环境：持久化（重启电脑不失效）、per-app 隔离（不污染全局环境/shell）、无需管理员权限。bundle id 写死默认值 `cn.qwenwork.desktop.mac`，可用 `QODER_BRIDGE_BUNDLE_ID` 覆盖（App 换包名时）。
+- **迁移**：旧版残留（launchctl 中的 shim 值 + shell profile 的 `# clauded-qwenwork` 标记行）已于 2026-08-22 在本机一次性清理完毕，代码中不保留迁移清理逻辑。
+- **影响**：改键后需重启千问办公（杀干净所有 QwenWorkCN 进程，见 D6）生效；`-dict` 为整字典覆盖，若用户在该 App 偏好中另有 LSEnvironment 键会被替换（本 shim 只用这两个键）；`defaults` 写入位于 `~/Library/Preferences/cn.qwenwork.desktop.mac.plist`，不影响 App 本体。
+- **何时重新考虑**：千问办公更换 bundle id 且无法迁移；LSEnvironment 注入在新启动机制或沙箱下失效（可退回 launchctl setenv + LaunchAgent plist 兜底）。
+
+## D10：macOS 环境变量改用 LaunchAgent（登录自动注入 + 即时生效），弃用 LSEnvironment
+
+- **问题**：D9 的 LSEnvironment 写入 App 用户偏好域（`~/Library/Preferences/cn.qwenwork.desktop.mac.plist`），注入依赖 bundle id 与 LaunchServices 启动机制——App 换包名、沙箱化或改启动方式即失效；`-dict` 为整字典覆盖，与 App 自身可能使用的 LSEnvironment 冲突。偏好域位置隐蔽，排查困难。
+- **方案**：写 `~/Library/LaunchAgents/com.clauded.qwenwork-bridge.plist`（`RunAtLoad`，`ProgramArguments` 为 `/bin/launchctl setenv QODER_CLI_PATH <shim> QODERCLI_PATH <shim>`——`launchctl setenv` 支持一次传多对 key value），登录时 launchd 自动执行，重启电脑/重新登录后自动注入；`pnpm apply`/`pnpm unapply` 同时立即执行 `launchctl setenv`/`unsetenv`，当前会话即时生效。launchd 用户域环境由 GUI 会话进程继承（Dock/Finder 启动的 App 都生效），不写 shell profile（`~/.zshrc` 一尘不染）。
+- **影响**：`launchctl setenv` 只对之后启动的进程生效（已运行的千问办公需重启，与旧方案一致）；注入面从 per-app 扩大为 launchd 用户域全局（变量名专属本桥接，实际影响可控）；plist 写死 shim 绝对路径，仓库移动后需重新 `pnpm apply`。**抗 App 升级**：注入源在用户目录（`~/Library/LaunchAgents`），与 `/Applications/QwenWorkCN.app` 的 asar 替换、版本目录轮换、bundle id 变更全部解耦——千问办公升级只影响 App 本体，不会碰 LaunchAgent，也不会清 launchd 环境；旧方案 LSEnvironment 写在 App 偏好域里，App 换包名就失效，这是 D10 相较 D9 的核心收益。
+- **迁移**：旧版 LSEnvironment 残留（`cn.qwenwork.desktop.mac` 偏好域中的键，指向同一 shim 路径）已于 2026-08-22 在本机一次性清理（`defaults delete cn.qwenwork.desktop.mac LSEnvironment`），代码中不保留迁移清理逻辑。
+- **何时重新考虑**：千问办公后续版本**不再读 `QODER_CLI_PATH` / `QODERCLI_PATH` 这两个环境变量**（注入链路本身不受 App 升级影响，但若 App 移除挂点，任何注入方式都失效）；macOS 新系统版本限制 launchd 用户域环境注入；shim 所在仓库移动（plist 内路径失效）。

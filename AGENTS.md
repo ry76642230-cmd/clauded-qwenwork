@@ -6,7 +6,7 @@
 
 ## Agent 如何理解这个项目
 
-- 核心挂点：**`QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量**（用户级）。两者必须同时注册——App 壳层 `main.js` 的 `getBundledQoderCliPath()` 读前者，SDK 内核的 `resolveExecutable()` 读后者。设置后，千问办公主进程与 `@qoder-ai/qoder-agent-sdk` 会把所有 Agent 查询改为 spawn 外部 CLI；若该路径以 `.js/.mjs` 结尾，SDK 会用 `node <path>` 执行——因此翻译层是一个 Node 脚本，无需编译。**Windows**: 写入 `HKCU\Environment` 注册表；**macOS**: 写入 `launchctl setenv` + `~/.zshrc`。
+- 核心挂点：**`QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量**（用户级）。两者必须同时注册——App 壳层 `main.js` 的 `getBundledQoderCliPath()` 读前者，SDK 内核的 `resolveExecutable()` 读后者。设置后，千问办公主进程与 `@qoder-ai/qoder-agent-sdk` 会把所有 Agent 查询改为 spawn 外部 CLI；若该路径以 `.js/.mjs` 结尾，SDK 会用 `node <path>` 执行——因此翻译层是一个 Node 脚本，无需编译。**Windows**: 写入 `HKCU\Environment` 注册表；**macOS**: 写 `~/Library/LaunchAgents/com.clauded.qwenwork-bridge.plist`（登录时 `launchctl setenv` 自动注入，重启不失效）。
 - 安装/卸载：`pnpm apply` 注册环境变量（跨平台）；`pnpm unapply` 撤销。详见 `src/index.mjs`。
 - 协议面：SDK ↔ CLI 走 JSONL 流（`--output-format stream-json`），其上叠加了 qoder 特有的 `control_request`/`control_response` 控制协议与 `system/init` 握手（`protocol_version`，major 必须为 1）。CLI 是 Claude Code CLI 的 fork，参数与事件结构同构，但存在差异清单（见 `docs/ARCHITECTURE.md` 与 spec）。
 - 原始素材：本机 `C:\Program Files\QwenWorkCN\0.1.8-26081406\`（Windows）和 `/Applications/QwenWorkCN.app`（macOS）均已解包分析，可随时重新解包。
@@ -39,7 +39,7 @@ src/
 
 ## 全局规则
 
-- 千问办公每次更新后需重新核对：环境变量挂点是否仍生效（app 版本目录变化不影响环境变量机制，但需抽查）。
+- 千问办公每次更新后需重新核对：环境变量挂点是否仍生效。**升级本身不会破坏注入链路**（macOS LaunchAgent 与 App 本体解耦，Windows 注册表也不随 App 更新被清除），真正要盯的是 App 是否继续读 `QODER_CLI_PATH` / `QODERCLI_PATH` 这两个挂点——若该挂点被移除，任何注入方式都失效；每次升级后跑一次 `pnpm apply` + 看 `src/logs/` 是否有新日志即可确认。
 - `claude` 可执行文件路径：
   - **Windows**: `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`（千问办公进程的 PATH 通常不含 npm 全局目录）
   - **macOS**: 自动探测 `/opt/homebrew/bin/node`、`/usr/local/bin/node` 等常见路径；也可通过 `QODER_BRIDGE_CLAUDE` 显式指定

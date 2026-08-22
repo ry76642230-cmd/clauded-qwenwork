@@ -97,9 +97,9 @@ src/index.mjs（pnpm apply / pnpm unapply，跨平台）
    │   │         + WM_SETTINGCHANGE 广播（PowerShell P/Invoke SendMessageTimeout）
    │   └─ unapply：reg delete → 广播 → 千问办公重启后恢复原引擎
    └─ macOS:
-       ├─ apply：launchctl setenv QODER_CLI_PATH + QODERCLI_PATH → src/bridge-shim-wrapper.sh 绝对路径
-       │         + 写入 ~/.zshrc（带 # clauded-qwenwork 标记）
-       └─ unapply：launchctl unsetenv → 清理 shell profile → 千问办公重启后恢复原引擎
+       ├─ apply：写 ~/Library/LaunchAgents/com.clauded.qwenwork-bridge.plist（RunAtLoad 登录时 setenv）
+       │         + launchctl setenv 即时生效（QODER_CLI_PATH + QODERCLI_PATH → bridge-shim-wrapper.sh 绝对路径）
+       └─ unapply：launchctl unsetenv ×2 + 删除 plist → 千问办公重启后恢复原引擎
 
 src/bridge-shim-wrapper.sh（macOS 专用 shell wrapper）
    ├─ 被 QODER_CLI_PATH 指向（替代 .mjs 文件）

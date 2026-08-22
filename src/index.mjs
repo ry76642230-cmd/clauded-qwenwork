@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // src/index.mjs — pnpm apply / pnpm unapply
 // 注册或撤销用户级环境变量 QODER_CLI_PATH + QODERCLI_PATH，让千问办公走 Claude Code 桥接
-// 跨平台：Windows（注册表 HKCU\Environment + WM_SETTINGCHANGE 广播）/ macOS（launchctl setenv + shell profile 持久化）
+// 跨平台：Windows（注册表 HKCU\Environment + WM_SETTINGCHANGE 广播）/
+//         macOS（LaunchAgent：登录时 launchctl setenv 自动注入 + apply/unapply 时即时生效）
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { appendFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { platform, homedir } from 'node:os';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
 
 const OS = platform();
 // Windows 用 .mjs 文件（SDK 自动识别并调用 node）
@@ -18,9 +19,6 @@ const SHIM_PATH = OS === 'win32'
 // SDK 内核 (resolveExecutable) 读 QODERCLI_PATH（无下划线）。
 // 两者必须同时注册，否则 shim 不会被调用。
 const ENV_NAMES = ['QODER_CLI_PATH', 'QODERCLI_PATH'];
-
-// macOS shell profile 标记（apply 写入，unapply 按标记清理）
-const SHELL_MARKER = 'clauded-qwenwork';
 
 // ---------- Windows 实现 ----------
 
@@ -62,10 +60,23 @@ const winBroadcast = () => {
 };
 
 // ---------- macOS 实现 ----------
+// 方案：LaunchAgent（DECISIONS.md D10）
+//   apply：写 ~/Library/LaunchAgents/com.clauded.qwenwork-bridge.plist（RunAtLoad），
+//          登录时 launchd 自动执行 launchctl setenv ×2 → 重启电脑/重新登录后自动注入；
+//          同时立即 launchctl setenv ×2，当前会话即时生效。
+//   unapply：launchctl unsetenv ×2 + 删除 plist。
+//   相比旧版 LSEnvironment（写 App 偏好域，依赖 bundle id + LaunchServices 注入），
+//   launchd 用户域环境由 GUI 会话进程继承（Dock/Finder 启动的 App 都生效），不碰 shell profile。
 
-const macGetCurrentValue = (name) => {
+const MAC_LABEL = 'com.clauded.qwenwork-bridge';
+const macPlistPath = () => join(homedir(), 'Library', 'LaunchAgents', `${MAC_LABEL}.plist`);
+
+// XML 转义（plist 内嵌 shim 绝对路径，防 & < > 破坏 XML）
+const xmlEscape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const macGetEnvValue = (name) => {
   try {
-    return execSync(`launchctl getenv ${name}`, {
+    return execSync(`launchctl getenv ${name} 2>&1`, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim() || null;
@@ -74,151 +85,126 @@ const macGetCurrentValue = (name) => {
   }
 };
 
-const macSetEnv = (name, value) => {
-  execSync(`launchctl setenv ${name} "${value}"`, { stdio: 'inherit' });
+// 即时生效：launchctl setenv 只对之后启动的进程生效（已运行的千问办公需重启）
+const macSetEnvNow = (name) => {
+  // 值用单引号包裹防 shell 转义（路径中不含单引号）
+  execSync(`launchctl setenv ${name} '${SHIM_PATH}'`, { stdio: 'inherit' });
 };
 
-const macUnsetEnv = (name) => {
+const macUnsetEnvNow = (name) => {
   try {
     execSync(`launchctl unsetenv ${name}`, { stdio: 'ignore' });
   } catch {
-    // 变量不存在时 launchctl unsetenv 可能报错，忽略
+    // 变量不存在时 launchctl 报错，忽略
   }
 };
 
-// shell profile 路径——macOS 默认 zsh，可通过 QODER_BRIDGE_SHELL_RC 覆盖
-const macGetShellRC = () => {
-  if (process.env.QODER_BRIDGE_SHELL_RC) return process.env.QODER_BRIDGE_SHELL_RC;
-  const home = homedir();
-  // 优先 zshrc（macOS 默认 shell），回退 bashrc
-  if (existsSync(join(home, '.zshrc')) || !existsSync(join(home, '.bashrc'))) {
-    return join(home, '.zshrc');
-  }
-  return join(home, '.bashrc');
+// 登录时自动注入：plist RunAtLoad 执行 /bin/launchctl setenv，支持一次传多对 key value
+const macWritePlist = () => {
+  mkdirSync(dirname(macPlistPath()), { recursive: true });
+  const args = ['setenv', ...ENV_NAMES.flatMap((name) => [name, SHIM_PATH])]
+    .map((a) => `    <string>${xmlEscape(a)}</string>`)
+    .join('\n');
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${MAC_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/launchctl</string>
+${args}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>`;
+  writeFileSync(macPlistPath(), xml, { mode: 0o644 });
+  console.log(`  已写入 ${macPlistPath()}`);
 };
 
-const macAddToShellProfile = (name, value) => {
-  const rc = macGetShellRC();
-  const line = `export ${name}="${value}" # ${SHELL_MARKER}`;
-  try {
-    if (existsSync(rc)) {
-      const content = readFileSync(rc, 'utf8');
-      // 先清掉同名的旧标记行
-      const cleaned = content
-        .split('\n')
-        .filter((l) => !l.includes(`# ${SHELL_MARKER}`))
-        .join('\n');
-      writeFileSync(rc, cleaned.trimEnd() + '\n' + line + '\n');
-    } else {
-      appendFileSync(rc, line + '\n');
-    }
-    console.log(`  已写入 ${rc}`);
-  } catch (e) {
-    console.log(`  写入 ${rc} 失败（${e.message}），仅 launchctl 生效，重启后需重新 pnpm apply`);
-  }
-};
-
-const macRemoveFromShellProfile = () => {
-  const home = homedir();
-  let removed = 0;
-  for (const rc of [join(home, '.zshrc'), join(home, '.bashrc')]) {
-    try {
-      if (!existsSync(rc)) continue;
-      const content = readFileSync(rc, 'utf8');
-      const cleaned = content
-        .split('\n')
-        .filter((l) => !l.includes(`# ${SHELL_MARKER}`))
-        .join('\n');
-      if (cleaned !== content) {
-        writeFileSync(rc, cleaned);
-        removed++;
-        console.log(`  已清理 ${rc}`);
-      }
-    } catch {
-      // 清理失败不阻塞
-    }
-  }
-  return removed;
+const macDeletePlist = () => {
+  if (!existsSync(macPlistPath())) return false;
+  rmSync(macPlistPath());
+  return true;
 };
 
 // ---------- 平台抽象层 ----------
 
 const getCurrentValue = (name) =>
-  OS === 'win32' ? winGetCurrentValue(name) : macGetCurrentValue(name);
+  OS === 'win32' ? winGetCurrentValue(name) : macGetEnvValue(name);
 
 const setEnv = (name, value) => {
   if (OS === 'win32') winSetReg(name, value);
-  else macSetEnv(name, value);
-  // 注意：macOS shell profile 写入在 apply() 统一处理，避免多次写入互相覆盖
+  // macOS：立即 setenv + 写 plist 在 apply() 统一处理
 };
 
 const delEnv = (name) => {
   if (OS === 'win32') winDelReg(name);
-  else macUnsetEnv(name);
+  // macOS：unsetenv + 删 plist 在 unapply() 统一处理
 };
 
 const broadcastChange = () => {
   if (OS === 'win32') winBroadcast();
-  // macOS launchctl setenv 立即生效，无需额外广播
+  // macOS launchctl setenv 由 launchd 即时分发给其后启动的进程，无需广播
 };
 
 // ---------- 命令 ----------
 
 const apply = () => {
-  for (const name of ENV_NAMES) {
-    const existing = getCurrentValue(name);
-    if (existing === SHIM_PATH) {
-      console.log(`值未变，覆盖写入: ${name}=${SHIM_PATH}`);
-    } else if (existing) {
-      console.log(`替换旧值: ${name}\n  旧: ${existing}\n  新: ${SHIM_PATH}`);
-    }
-    setEnv(name, SHIM_PATH);
-  }
-  // macOS: 一次性写入所有环境变量到 shell profile（避免循环内每次写入互相覆盖）
-  if (OS !== 'win32') {
-    const rc = macGetShellRC();
-    const lines = ENV_NAMES.map((name) => `export ${name}="${SHIM_PATH}" # ${SHELL_MARKER}`);
-    try {
-      let content = '';
-      if (existsSync(rc)) {
-        content = readFileSync(rc, 'utf8')
-          .split('\n')
-          .filter((l) => !l.includes(`# ${SHELL_MARKER}`))
-          .join('\n');
+  if (OS === 'win32') {
+    for (const name of ENV_NAMES) {
+      const existing = getCurrentValue(name);
+      if (existing === SHIM_PATH) {
+        console.log(`值未变，覆盖写入: ${name}=${SHIM_PATH}`);
+      } else if (existing) {
+        console.log(`替换旧值: ${name}\n  旧: ${existing}\n  新: ${SHIM_PATH}`);
       }
-      writeFileSync(rc, content.trimEnd() + '\n' + lines.join('\n') + '\n');
-      console.log(`  已写入 ${rc}`);
-    } catch (e) {
-      console.log(`  写入 ${rc} 失败（${e.message}），仅 launchctl 生效，重启后需重新 pnpm apply`);
+      setEnv(name, SHIM_PATH);
     }
+  } else {
+    const existing = macGetEnvValue(ENV_NAMES[0]) || macGetEnvValue(ENV_NAMES[1]);
+    if (existing && existing !== SHIM_PATH) {
+      console.log(`替换旧值: ${existing}\n  新: ${SHIM_PATH}`);
+    }
+    macWritePlist();
+    for (const name of ENV_NAMES) macSetEnvNow(name);
   }
   broadcastChange();
-  console.log(`\n已注册（${OS === 'win32' ? 'Windows 注册表' : 'macOS launchctl + shell profile'}）:`);
+  console.log(`\n已注册（${OS === 'win32' ? 'Windows 注册表' : 'macOS LaunchAgent'}）:`);
   for (const name of ENV_NAMES) console.log(`  ${name}=${SHIM_PATH}`);
   if (OS === 'win32') {
     console.log('重启千问办公即可生效。');
   } else {
-    console.log('重启千问办公即可生效（建议从终端启动以继承 shell profile）。');
+    console.log('重启千问办公即可生效（当前会话已即时注入；重启电脑后登录时由 LaunchAgent 自动恢复）。');
   }
 };
 
 const unapply = () => {
   let removed = 0;
-  for (const name of ENV_NAMES) {
-    if (getCurrentValue(name)) {
-      delEnv(name);
-      removed++;
+  if (OS === 'win32') {
+    for (const name of ENV_NAMES) {
+      if (getCurrentValue(name)) {
+        delEnv(name);
+        removed++;
+      }
     }
-  }
-  if (OS !== 'win32') {
-    macRemoveFromShellProfile();
+  } else {
+    if (macDeletePlist()) removed++;
+    for (const name of ENV_NAMES) {
+      if (macGetEnvValue(name)) {
+        macUnsetEnvNow(name);
+        removed++;
+      }
+    }
   }
   if (removed === 0) {
     console.log('未注册，无需撤销。');
     return;
   }
   broadcastChange();
-  console.log(`已撤销 ${removed} 个环境变量，重启千问办公恢复原引擎。`);
+  console.log(`已撤销 ${removed} 项注册，重启千问办公恢复原引擎。`);
 };
 
 const cmd = process.argv[2];
@@ -228,5 +214,5 @@ else {
   console.log('用法:');
   console.log('  pnpm apply    注册 QODER_CLI_PATH + QODERCLI_PATH → 千问办公走 Claude Code');
   console.log('  pnpm unapply  撤销两个变量 → 恢复原引擎');
-  console.log(`\n当前平台: ${OS}（${OS === 'win32' ? 'Windows 注册表' : 'macOS launchctl + shell profile'}）`);
+  console.log(`\n当前平台: ${OS}（${OS === 'win32' ? 'Windows 注册表' : 'macOS LaunchAgent'}）`);
 }

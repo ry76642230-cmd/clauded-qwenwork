@@ -13,6 +13,7 @@
 ## 当前状态
 
 - 2026-08-21：**探索完成 + 首版实现 + 端到端联调通过**。bridge shim 已编写（`src/bridge-shim.mjs`），注册/撤销工具已就绪（`src/index.mjs`），支持 Windows 和 macOS 双平台。自动化测试与真实千问办公联调均已通过（ledger 首条 `is_error: false` 会话落地）。
+- 2026-08-22：macOS 注入方式从 LSEnvironment 升级为 LaunchAgent（`~/Library/LaunchAgents` plist + `launchctl setenv`），与 App 本体解耦，千问办公升级不再破坏注入链路。
 - Spy 阶段已完成，协议样本已用于校准实现。
 - 待持续验证：技能复用、多轮会话稳定性、千问办公新版本回归。
 
@@ -33,7 +34,7 @@ pnpm install
 
 # 2. 注册环境变量
 #    Windows: 写入 HKCU\Environment 注册表并广播变更
-#    macOS:   写入 launchctl + shell profile (~/.zshrc)
+#    macOS:   写 ~/Library/LaunchAgents plist（登录时自动 setenv）+ launchctl setenv 即时生效
 pnpm apply
 
 # 3. 重启千问办公，所有 Agent 查询即走 Claude Code
@@ -55,7 +56,9 @@ pnpm unapply
 
 > **踩坑提示喵～** 若首次 `pnpm apply` 后千问办公仍走原引擎，请确认两件事：
 > 1. 杀干净所有 `QwenWorkCN` 进程再启动（app 有 `binaryPathComputed` 缓存，仅完全重启才会重读环境变量）；
-> 2. shim 的 `src/logs/` 目录若为空 = shim 从未被调用，说明环境变量没生效（Windows: 用 `reg query HKCU\Environment` 核对；macOS: 用 `launchctl getenv QODER_CLI_PATH` 核对 `QODER_CLI_PATH` / `QODERCLI_PATH` 两个都要在）。
+> 2. shim 的 `src/logs/` 目录若为空 = shim 从未被调用，说明环境变量没生效（Windows: 用 `reg query HKCU\Environment` 核对；macOS: 用 `launchctl getenv QODER_CLI_PATH` 核对，并确认 `~/Library/LaunchAgents/com.clauded.qwenwork-bridge.plist` 存在）。
+>
+> **关于千问办公升级**：LaunchAgent（macOS）/ 注册表（Windows）与 App 本体解耦，千问办公版本升级不会破坏注入链路；升级后若失效，原因是 App 不再读 `QODER_CLI_PATH`/`QODERCLI_PATH` 这两个挂点（与注入方式无关），跑一次 `pnpm apply` + 看 `src/logs/` 即可确认。
 >
 > **macOS 平台特殊说明**：千问办公的 `PATH` 环境变量被限制为 `/usr/bin:/bin:/usr/sbin:/sbin`，不含 `/opt/homebrew/bin`，因此 shell wrapper（`src/bridge-shim-wrapper.sh`）会显式查找 node 和 claude 的完整路径。
 
@@ -66,4 +69,4 @@ pnpm unapply
 - Claude Code CLI `--output-format stream-json` 协议
 - Node.js 翻译层（参数过滤 / 事件改写 / 控制协议应答 / 成本台账）
 - **Windows**: 注册表 `HKCU\Environment` 用户级环境变量 + `WM_SETTINGCHANGE` 广播
-- **macOS**: `launchctl setenv` + shell profile 持久化 + shell wrapper 绕过 PATH 限制
+- **macOS**: LaunchAgent（`~/Library/LaunchAgents` plist 登录时 `launchctl setenv` 自动注入，重启电脑不失效）+ shell wrapper 绕过 PATH 限制

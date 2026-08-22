@@ -113,7 +113,7 @@
 | `src/bridge-shim.mjs` | 核心翻译层（参数翻译 + 控制协议应答 + 事件改写 + 台账） |
 | `src/bridge-shim-wrapper.sh` | macOS shell wrapper（绕过 SDK PATH 限制，探测 node 绝对路径） |
 | `src/bridge-shim.test.mjs` | 自动化测试（模拟 SDK 调用 shim，验证内部查询 + 真实会话多轮） |
-| `src/index.mjs` | `pnpm apply`/`pnpm unapply`：注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量（跨平台：Windows 注册表 + macOS launchctl） |
+| `src/index.mjs` | `pnpm apply`/`pnpm unapply`：注册/撤销 `QODER_CLI_PATH` + `QODERCLI_PATH` 两个环境变量（跨平台：Windows 注册表 + macOS `LaunchAgent`） |
 
 ### 环境变量
 
