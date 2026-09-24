@@ -41,8 +41,11 @@
 
 - `--setting-sources` / `--settings` / `--tools` / `--allowed-tools` / `--disallowed-tools`：claude 默认加载 user/project/local + 全套工具
 - `--permission-mode default`：不传（用 claude 默认）；`bypassPermissions`/`accept_edits`/`dont_ask`/`auto`/`plan` 按 claude 词汇表归一后透传（`PM_MAP`）
-- `--caller-version --ide-type --session-mirror --porcelain --keep-data --workdir --org-id --email --extensions --disable-builtin-skills --permission-prompt-tool --max-turns`：过滤
+- `--caller-version --ide-type --session-mirror --porcelain --keep-data --workdir --org-id --email --extensions --disable-builtin-skills --max-turns`：过滤
 - 未知参数：丢弃并记日志（保守原则）
+
+**审批通道**：`--permission-prompt-tool stdio` **必须透传**（app 主对话恒传）。它是 claude
+反问宿主的唯一通道，丢了就等于没人能批准工具调用（详见「坑 15」）。
 
 **模型**：app 传的 `qwen-*` 模型名丢弃；仅当 `QODER_BRIDGE_MODEL` 环境变量设置时才显式传 `--model`。
 
@@ -177,6 +180,31 @@
 12. **`--verbose` 追加**：claude 2.x 要求（实测报错「requires --verbose」）。
 13. **spy 实验教训**：SDK 对 CLI 的退出码 0/41 语义敏感；spy/shim 被杀（SIGTERM）时需透杀子进程，否则 qoderclicn/claude 变孤儿。
 14. **台账**：`~/.qwenwork-bridge/ledger.jsonl` 已实测落盘（`total_cost_usd/num_turns/duration_ms/is_error/result_preview`）。
+15. **`--permission-prompt-tool stdio` 与 `can_use_tool` 双向转发是刚需（2026-09-24 修复）**：
+    原实现把该参数当噪声丢弃，并把 claude 的 `can_use_tool` 控制请求与宿主的
+    `control_response` 全部吞掉。后果是 claude 的每次 Bash / 跨目录 Read/Write 都卡在
+    `This command requires approval`，跨工作区路径另报
+    `may only list files in the allowed working directories for this session`，
+    且千问办公「完全访问」开关完全无效（UI 亮了也没用）——因为审批请求根本到不了 App。
+    修法三条：① `--permission-prompt-tool` 进 `VALUE_ARGS` 并透传；② stdout 侧把
+    claude 的 `can_use_tool` 原样转给 App；③ stdin 侧把 App 的 `control_response`
+    回写给 claude。另转发 `set_permission_mode`，让 App 切「完全访问」能实时落到 claude。
+    回归测试见 `src/bridge-shim.test.mjs` 测试 3。
+16. **「完全访问」的真实实现路径**：1.2.1 的 App **不发** `set_permission_mode`
+    （其 RC 能力表里 `supports_set_permission_mode: false`），而是把三个 UI 模式
+    （`request_approval` / `full_access` / `auto_review`）落在 SDK 的 `canUseTool`
+    回调里：`full_access` 直接返回 `{behavior:"allow"}`。所以**审批通道一通，
+    「完全访问」自然生效**，不需要额外开 `--dangerously-skip-permissions`。
+    因此本轮**没有**加 `--allow-dangerously-skip-permissions`：实测它不会让 default
+    模式静默放行（deny 仍生效），但也没有必要，保持与原生 claude 一致的最小权限面。
+    若将来 App 改为真的发 `set_permission_mode bypassPermissions`，claude 会回
+    `Cannot set permission mode to bypassPermissions because the session was not
+    launched with --dangerously-skip-permissions`（已实测），届时再加该启动参数。
+17. **`add_directories`（SDK）vs `add_directory`（claude）**：SDK 发
+    `{subtype:"add_directories",directories:[...]}`，claude 只认
+    `{subtype:"add_directory", mount_path}`，且要求容器内
+    `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`。两者不通用，**未做转发**；
+    跨目录访问目前靠审批通道放行（测试 3 已覆盖）。
 
 ## 联调校准记录（2026-08-21，真实千问办公联调）
 

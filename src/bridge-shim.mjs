@@ -88,6 +88,7 @@ const VALUE_ARGS = new Set([
   '--allowed-tools', '--disallowed-tools', '--resume', '--add-dir', '--agent',
   '--plugin-dir', '--images', '--include', '--allowed-mcp-server-names',
   '--system-prompt', '--append-system-prompt', '--max-budget-usd', '--max-output-tokens',
+  '--permission-prompt-tool',
 ]);
 // 无值参数
 const FLAG_ARGS = new Set([
@@ -102,6 +103,25 @@ const PM_MAP = {
   dont_ask: 'dontAsk',
   auto: 'auto',
   plan: 'plan',
+};
+
+// 运行时 set_permission_mode 的词汇表（两套都认，且 'default' 在这里是合法值，
+// 不能像 PM_MAP 那样映射成「不传」）：
+//   app（千问办公 UI）：request_approval / full_access / auto_review
+//   claude：default / acceptEdits / bypassPermissions / dontAsk / auto / plan
+const RUNTIME_MODE_MAP = {
+  request_approval: 'default',
+  full_access: 'bypassPermissions',
+  auto_review: 'auto',
+  default: 'default',
+  accept_edits: 'acceptEdits',
+  acceptEdits: 'acceptEdits',
+  bypassPermissions: 'bypassPermissions',
+  dont_ask: 'dontAsk',
+  dontAsk: 'dontAsk',
+  auto: 'auto',
+  plan: 'plan',
+  yolo: 'bypassPermissions',
 };
 
 // claude 的 --session-id 若指向已存在的会话，会直接报
@@ -149,9 +169,16 @@ function parseArgs(argv) {
   }
   // MCP：qw-builtin 网关必须透传（千问办公的工具通道）；--strict-mcp-config 丢弃（让主人既有 MCP 共存）
   if (get('--mcp-config') !== undefined) claudeArgs.push('--mcp-config', get('--mcp-config'));
-  // 权限：交给 claude 侧配置（主人的 ~/.claude/settings.json）
-  const pm = PM_MAP[get('--permission-mode')];
+  // 权限模式：app 恒传 default（只有 plan 会话例外），「完全访问」是 app 侧在 canUseTool
+  // 回调里自动批准，所以模式本身透传；default → 不传，交给 claude 默认行为。
+  // QODER_BRIDGE_PERMISSION_MODE 可强制覆盖（排障用）。
+  const pm = PM_MAP[process.env.QODER_BRIDGE_PERMISSION_MODE ?? get('--permission-mode')];
   if (pm) claudeArgs.push('--permission-mode', pm);
+  // 审批通道必须保住：claude 用 `can_use_tool` 控制请求反问宿主，宿主答 allow/deny。
+  // 这个参数一旦丢掉，claude 就没人可问 —— 表现就是每条 Bash/跨目录读写都
+  // 「requires approval」或「may only read files in the allowed working directories」，
+  // 且千问办公的「完全访问」开关永远不生效。
+  if (get('--permission-prompt-tool') === 'stdio') claudeArgs.push('--permission-prompt-tool', 'stdio');
   // 模型：qwork-* 丢弃；QODER_BRIDGE_MODEL 显式指定
   if (BRIDGE_MODEL) claudeArgs.push('--model', BRIDGE_MODEL);
   // --setting-sources / --settings / --tools / --allowed-tools / --disallowed-tools：丢弃
@@ -228,6 +255,9 @@ function runSession(parsed) {
   let lastUserText = '';
   let claudeReady = false;
   const pendingStdin = [];
+  // 我们转给 App 的审批请求 id；只有这些 id 的回执才该回写给 claude，
+  // 避免把无关的 control_response 灌进 claude 的 stdin。
+  const pendingApprovalIds = new Set();
 
   const flush = () => {
     if (!claudeReady) return;
@@ -257,6 +287,22 @@ function runSession(parsed) {
           try { child.kill('SIGTERM'); } catch {}
           resp = { still_queued: [] };
           break;
+        // 权限模式切换必须落到 claude 自己身上，否则千问办公里切「完全访问」
+        // 只改了 UI 状态，claude 那边还是 default，命令照样被拦。
+        // 原样转发给 claude，它的 control_response 会经 stdout 回给 App。
+        // 注：当前 1.2.1 的 App 实际不发这个请求（其 RC 能力表里
+        // supports_set_permission_mode=false，「完全访问」是 App 在 canUseTool
+        // 里自动批准）；这里保留转发是为了将来 App 版本变化时仍能正确工作。
+        case 'set_permission_mode': {
+          const mode = RUNTIME_MODE_MAP[req.mode] ?? req.mode;
+          if (mode && child.stdin.writable) {
+            child.stdin.write(JSON.stringify({ type: 'control_request', request_id: msg.request_id, request: { ...req, mode } }) + '\n');
+            log('FWD', `set_permission_mode ${req.mode} -> ${mode}`);
+            return; // 不本地作答，等 claude 的 control_response
+          }
+          resp = { ok: false, error: `unsupported permission mode: ${req.mode}` };
+          break;
+        }
         default:
           log('CTRL-UNHANDLED', subtype);
           resp = {};
@@ -266,7 +312,14 @@ function runSession(parsed) {
     }
 
     if (msg.type === 'control_response') {
-      // SDK 应答 CLI 的请求（get_model_policy 等）——claude 不需要，丢弃
+      // App 应答 claude 的请求。当前只有一类：can_use_tool（宿主审批）。
+      // 必须回给 claude，否则它的工具调用永远等不到答复。
+      const rid = msg.response?.request_id;
+      if (rid && pendingApprovalIds.has(rid) && child.stdin.writable) {
+        pendingApprovalIds.delete(rid);
+        child.stdin.write(JSON.stringify(msg) + '\n');
+        log('APPROVAL', `app -> claude ${msg.response.subtype} ${rid}`);
+      }
       return;
     }
 
@@ -301,6 +354,16 @@ function runSession(parsed) {
         if (block.type === 'tool_use' && TOOL_MAP[block.name]) block.name = TOOL_MAP[block.name];
       }
       process.stdout.write(JSON.stringify(msg) + '\n');
+      return;
+    }
+
+    // claude 反问宿主能否用某个工具（Bash/Write/跨目录 Read 等）→ 原样转给 App，
+    // 由 App 的 canUseTool 回调决定（「完全访问」= 自动批准）。App 的答复会以
+    // control_response 回到 stdin 分支，再转发给 claude。
+    if (msg.type === 'control_request' && (msg.request?.subtype ?? msg.request?.type) === 'can_use_tool') {
+      pendingApprovalIds.add(msg.request_id);
+      process.stdout.write(JSON.stringify(msg) + '\n');
+      log('ASK', `can_use_tool ${msg.request.tool_name} ${msg.request.blocked_path ?? ''}`.trim());
       return;
     }
 
