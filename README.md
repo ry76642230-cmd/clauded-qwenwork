@@ -55,6 +55,8 @@ pnpm unapply
 
 仓库自带启动器 `scripts/start-qwenwork.bat` 把这几件事一起做了：
 自己注入两个环境变量 → 关掉旧实例 → 启动 → 查日志自检是 `custom` 还是 `bundled`。
+启动走 `powershell Start-Process`（ShellExecute），app 挂到 explorer 下，
+**关掉启动器窗口不会连带关掉千问办公**；自检一通过窗口会自己关掉。
 
 ```
 双击 scripts\start-qwenwork.bat
