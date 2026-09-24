@@ -1,9 +1,12 @@
 // bridge-shim.test.mjs — 模拟 SDK 调用 bridge-shim.mjs 的完整流程（内部查询 + 真实会话多轮）
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-const SHIM = 'C:\\Users\\xrl\\Documents\\Repos\\clauded-qwenwork\\bridge\\bridge-shim.mjs';
-const CWD = 'C:\\Users\\xrl\\Documents\\Repos\\clauded-qwenwork\\bridge';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SHIM = join(HERE, 'bridge-shim.mjs');
+const CWD = HERE;
 
 let failures = 0;
 const ok = (cond, name) => { console.log(`${cond ? 'PASS' : 'FAIL'} ${name}`); if (!cond) failures++; };

@@ -8,7 +8,7 @@
 //   3. 应答 SDK 的 control_request；改写 claude 事件；记账
 import { spawn, execSync as _execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, platform } from 'node:os';
@@ -104,6 +104,25 @@ const PM_MAP = {
   plan: 'plan',
 };
 
+// claude 的 --session-id 若指向已存在的会话，会直接报
+//   Error: Session ID xxx is already in use.
+// 并立即退出；而千问办公/SDK 的多轮对话会复用同一个 session id，
+// 导致第二轮起必然失败。检测到该 id 已有会话文件时，改用 --resume 续接。
+function claudeSessionFileFor(sessionId) {
+  if (!sessionId) return null;
+  const projectsRoot = join(homedir(), '.claude', 'projects');
+  const slug = process.cwd().replace(/[:\\/]+/g, '-');
+  const direct = join(projectsRoot, slug, sessionId + '.jsonl');
+  if (existsSync(direct)) return direct;
+  try {
+    for (const d of readdirSync(projectsRoot)) {
+      const candidate = join(projectsRoot, d, sessionId + '.jsonl');
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch {}
+  return null;
+}
+
 function parseArgs(argv) {
   const values = new Map();
   const flags = new Set();
@@ -138,7 +157,19 @@ function parseArgs(argv) {
   // --setting-sources / --settings / --tools / --allowed-tools / --disallowed-tools：丢弃
   //   （claude 默认加载 user/project/local；qoder settings 字段 claude 不认；工具集用 claude 默认全套）
 
-  return { internal, claudeArgs, sessionId: get('--session-id') ?? null };
+  // ---- session id 复用处理 ----
+  const sessionId = get('--session-id') ?? null;
+  if (sessionId && get('--resume') === undefined) {
+    const existing = claudeSessionFileFor(sessionId);
+    if (existing) {
+      log('SESSION', 'session id already exists, switching to --resume: ' + existing);
+      const at = claudeArgs.indexOf('--session-id');
+      if (at !== -1) claudeArgs.splice(at, 2);
+      claudeArgs.push('--resume', sessionId);
+    }
+  }
+
+  return { internal, claudeArgs, sessionId };
 }
 
 // ---------- 内部查询：自答，不 spawn claude ----------
@@ -166,13 +197,30 @@ function runInternal() {
 function runSession(parsed) {
   log('MODE', `real session sessionId=${parsed.sessionId} claudeArgs=${JSON.stringify(parsed.claudeArgs)}`);
 
+  // 先占位声明：spawn 的 error/exit 回调可能在下面赋值前触发，
+  // 用可选链避免 TDZ/undefined 崩溃。
+  let stdinRl = null;
+
   const child = spawn(CLAUDE_BIN, parsed.claudeArgs, {
     cwd: process.cwd(),
     env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'qwenwork-bridge' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  child.on('error', (e) => { log('ERROR', e.message); process.exitCode = 1; });
-  child.on('exit', (code, signal) => { log('EXIT', `code=${code} signal=${signal}`); process.exitCode = code ?? 1; });
+  child.on('error', (e) => {
+    log('ERROR', e.message);
+    process.exitCode = 1;
+    try { stdinRl?.close(); } catch {}
+    setImmediate(() => { try { process.exit(1); } catch {} });
+  });
+  child.on('exit', (code, signal) => {
+    log('EXIT', `code=${code} signal=${signal}`);
+    process.exitCode = code ?? 1;
+    // claude 已死：立刻关掉 stdin 读取与 stdout，让 SDK 收到流结束信号，
+    // 否则千问办公会一直挂着等响应。
+    try { stdinRl?.close(); } catch {}
+    try { child.stdin.destroy(); } catch {}
+    setImmediate(() => { try { process.exit(process.exitCode ?? 0); } catch {} });
+  });
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, () => { try { child.kill(sig); } catch {} });
   }
@@ -189,7 +237,7 @@ function runSession(parsed) {
   };
 
   // ---- stdin：拦截 control_request / control_response，透传 user ----
-  const stdinRl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  stdinRl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   stdinRl.on('line', (line) => {
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
