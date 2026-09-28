@@ -30,6 +30,9 @@ function runInternalDriven() {
             c.stdin.write(JSON.stringify({ type: 'control_request', request_id: 't2', request: { subtype: 'get_models' } }) + '\n');
           } else if (responses.length === 2) {
             ok(Array.isArray(msg.response?.response?.models), 'get_models 返回 models 列表');
+            // 回归：isVl 缺失会让千问办公判定「当前模型不支持图片」（错误码 9e4），
+            // 把带图消息全拦掉。app 侧归一化默认 false，所以必须显式给 true。
+            ok(msg.response.response.models[0]?.isVl === true, 'get_models 声明 isVl:true（图片能力）');
             c.stdin.end();
           }
         }

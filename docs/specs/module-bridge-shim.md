@@ -56,7 +56,7 @@
 | 请求 | 响应策略 |
 |---|---|
 | `initialize` | `{commands:[], agents:[], skills:[], output_style:"default", available_output_styles:[], models:[], account:{}, capabilities:[interrupt_receipt_v1, interrupt_cancel_queued_v1, msg_lifecycle_v1, session_rewind_v1, background_tasks_v1], pid}` |
-| `get_models` | `{models:[{value:"claude-bridge", displayName:"Claude", description:"使用强大的 Claude Code 代理后端", modelId:"claude-bridge", source:"system", isDefault:true}]}` |
+| `get_models` | `{models:[{value:"claude-bridge", displayName:"Claude", description:"使用强大的 Claude Code 代理后端", modelId:"claude-bridge", source:"system", isDefault:true, isVl:true}]}` |
 | `get_context_usage` | `{categories:[{name:"User Messages",tokens:0,color:"#3b82f6"},{name:"Assistant Messages",tokens:0,color:"#22c55e"},{name:"Thinking",tokens:0,color:"#8b5cf6"}], totalTokens:0, maxTokens:0, rawMaxTokens:0, percentage:0, gridRows:[]}` |
 | `generate_session_title` | 用 `req.description` 或 `lastUserText` 截断 20 字生成 `{title}` |
 | `interrupt` | SIGTERM kill 当前 claude 子进程，返回 `{still_queued:[]}` |
@@ -205,6 +205,20 @@
     `{subtype:"add_directory", mount_path}`，且要求容器内
     `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`。两者不通用，**未做转发**；
     跨目录访问目前靠审批通道放行（测试 3 已覆盖）。
+18. **`isVl` 必须给，否则千问办公报「当前模型不支持图片」（2026-09-28 修复，错误码 9e4）**：
+    千问办公判断模型能否收图片靠 `modelSupportsImageInput()`，实现是
+    ```js
+    const m = models.find(s => s.key === r)
+    if (m) return m.isVl === true      // 找到就以 isVl 为准
+    return true                        // 找不到才默认允许
+    ```
+    而归一化处是 `isVl: asBoolean(i.isVl ?? i.is_vl, false)` —— **默认 false**。
+    我们的 shim 在 `get_models` 里返回了 `claude-bridge`，却没给 `isVl`，
+    于是被判为「不支持图片」，所有带图消息直接被 UI 拦下（即使上游模型支持视觉）。
+    修法：`MODELS_RESPONSE` 的模型条目加 `isVl: true`。
+    实测：修前 app 日志 `qoderWorkModels` 显示 `"isVl":false`；修后同一字段变
+    `"isVl":true`，图片功能恢复。回归：翻译层本身对图片是通的（直接 POST
+    /v1/messages 带 base64 图片 → 200，模型能描述图片），说明问题只在 app 侧判定。
 
 ## 联调校准记录（2026-08-21，真实千问办公联调）
 

@@ -66,7 +66,20 @@ const INIT_RESPONSE = () => ({
   models: [], account: {}, capabilities: CAPABILITIES, pid: process.pid,
 });
 const MODELS_RESPONSE = () => ({
-  models: [{ value: 'claude-bridge', displayName: 'Claude', description: '使用强大的 Claude Code 代理后端', modelId: 'claude-bridge', source: 'system', isDefault: true }],
+  // isVl = 是否支持图片输入（vision-language）。千问办公的
+  // modelSupportsImageInput() 就是读这个字段：`i.isVl === true`，
+  // 而归一化处 asBoolean(i.isVl ?? i.is_vl, false) 默认 false。
+  // 缺了它，UI 会判定「当前模型不支持图片」并拦掉所有带图消息
+  // （错误码 9e4），即使上游模型本身支持视觉。
+  models: [{
+    value: 'claude-bridge',
+    displayName: 'Claude',
+    description: '使用强大的 Claude Code 代理后端',
+    modelId: 'claude-bridge',
+    source: 'system',
+    isDefault: true,
+    isVl: true,
+  }],
 });
 const CONTEXT_USAGE_RESPONSE = () => ({
   categories: [
