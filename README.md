@@ -48,15 +48,32 @@ pnpm unapply
 
 ### 日常启动（推荐：桌面启动器）
 
-环境变量只在**进程启动那一刻**被继承。直接双击千问办公自己的图标时，父进程
-不一定带着 `QODER_CLI_PATH`，于是 app 退回自带引擎（`qoderclicn.exe`），
-**消耗千问积分而不是你的 Claude**。千问办公又有单实例锁：旧进程没退干净时，
-再启动只会唤回旧窗口，根本不会重读环境变量 —— 表现就是"重启了反而掉了"。
+**两种启动方式，各走各的引擎**（2026-09-29 起）：
+
+| 启动方式 | 用哪个引擎 | 计费 |
+|---|---|---|
+| 双击千问办公自己的图标 | 官方引擎 `qoderclicn.exe` | 千问积分 |
+| 双击 `scripts\start-qwenwork.bat` | Claude Code（经桥接） | 你的 Claude |
+
+**原理**：千问办公只按**进程启动那一刻的环境变量**决定用哪个 CLI
+（`getBundledQoderCliPath()` 读 `process.env.QODER_CLI_PATH`，不落盘、不记配置）。
+所以只要**不写用户级持久变量**，双击图标就走官方引擎；而启动器在**自己的进程里**
+临时注入这两个变量再拉起 app，就只有它走 Claude。
+
+> 反过来，如果用 `pnpm apply` 把变量写进 `HKCU\Environment`（用户级、持久），
+> 那么**所有**新进程都会带上它 —— 重启电脑后双击图标也会走 Claude，
+> 就没法「双击=官方、bat=Claude」二选一了。这也是 `install.ps1` 之后
+> 需要 `pnpm unapply` 的原因。
 
 仓库自带启动器 `scripts/start-qwenwork.bat` 把这几件事一起做了：
 自己注入两个环境变量 → 关掉旧实例 → 启动 → 查日志自检是 `custom` 还是 `bundled`。
 启动走 `powershell Start-Process`（ShellExecute），app 挂到 explorer 下，
 **关掉启动器窗口不会连带关掉千问办公**；自检一通过窗口会自己关掉。
+
+桥接文件路径**优先按仓库内相对路径推导**（`%~dp0..\src\bridge-shim.mjs`），
+不依赖注册表；所以 `pnpm unapply` 之后启动器照旧可用。
+若旧实例残留，脚本会先 `taskkill` 再启动（千问办公有单实例锁，
+不退干净就只会唤回旧窗口、不重读环境变量）。
 
 ```
 双击 scripts\start-qwenwork.bat

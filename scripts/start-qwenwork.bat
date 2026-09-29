@@ -41,11 +41,14 @@ exit /b 1
 echo [1/4] 程序 : %QW_EXE%
 
 REM ---------- 2. 注入桥接环境变量 ----------
+REM 优先用仓库内路径(bat 就在仓库里, 不依赖注册表)
+set "SHIM_PATH=%REPO_ROOT%\src\bridge-shim.mjs"
+if exist "%SHIM_PATH%" goto :have_shim
+REM 回退: 注册表里 pnpm apply 注入过的路径
 set "SHIM_PATH="
 for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v QODER_CLI_PATH 2^>nul ^| findstr /i "REG_SZ"') do set "SHIM_PATH=%%B"
 if defined SHIM_PATH goto :have_shim
-set "SHIM_PATH=%REPO_ROOT%\src\bridge-shim.mjs"
-echo [!] 注册表里没读到 QODER_CLI_PATH, 改用仓库内相对路径
+echo [!] 仓库内找不到桥接文件, 注册表里也没有 QODER_CLI_PATH
 
 :have_shim
 set "QODER_CLI_PATH=%SHIM_PATH%"
@@ -56,7 +59,7 @@ echo.
 echo [X] 桥接文件不存在, 已中止启动。
 echo     照常启动会退回自带引擎, 消耗千问积分。
 echo     期望路径: %SHIM_PATH%
-echo     修复: cd /d "%REPO_ROOT%" ^&^& pnpm apply
+echo     修复: 检查仓库是否完整 ^(缺 src\bridge-shim.mjs^), 然后 git pull 重试
 echo.
 pause
 exit /b 1
@@ -123,7 +126,7 @@ echo [X] 走了自带引擎, 在用千问积分 (不是你的 Claude)
 echo      日志: %LOGDIR%\main.log
 call :writelog BUNDLED
 echo.
-echo     修复: cd /d "%REPO_ROOT%" ^&^& pnpm apply
+echo     修复: 检查仓库是否完整 ^(缺 src\bridge-shim.mjs^), 然后 git pull 重试
 echo     然后关掉千问办公, 再双击本脚本一次。
 echo.
 pause
