@@ -93,11 +93,16 @@ pnpm unapply
 | `QODER_BRIDGE_NODE` | **macOS 专用**：覆盖 `node` 可执行文件路径（默认走 `/opt/homebrew/bin/node`，因千问办公进程的 `PATH` 通常不含 Homebrew 目录） |
 | `QODER_BRIDGE_MODEL` | 强制指定 claude 模型别名（默认不指定，由 claude 自行选择） |
 
-> **踩坑提示喵～** 若首次 `pnpm apply` 后千问办公仍走原引擎，请确认两件事：
+> **踩坑提示喵～** 走启动器仍回原引擎时，按顺序查：
 > 1. 杀干净所有 `QwenWorkCN` 进程再启动（app 有 `binaryPathComputed` 缓存，仅完全重启才会重读环境变量）；
-> 2. shim 的 `src/logs/` 目录若为空 = shim 从未被调用，说明环境变量没生效（Windows: 用 `reg query HKCU\Environment` 核对；macOS: 用 `launchctl getenv QODER_CLI_PATH` 核对，并确认 `~/Library/LaunchAgents/com.clauded.qwenwork-bridge.plist` 存在）。
+> 2. shim 的 `src/logs/` 目录若为空 = shim 从未被调用；对照 app 日志
+>    `%APPDATA%\QwenWorkCN\logs\<最新>\main.log` 里搜 `Using custom QODER_CLI_PATH`（好）
+>    还是 `Resolved bundled Qoder CLI path`（坏）。
 >
-> **关于千问办公升级**：LaunchAgent（macOS）/ 注册表（Windows）与 App 本体解耦，千问办公版本升级不会破坏注入链路；升级后若失效，原因是 App 不再读 `QODER_CLI_PATH`/`QODERCLI_PATH` 这两个挂点（与注入方式无关），跑一次 `pnpm apply` + 看 `src/logs/` 即可确认。
+> **关于千问办公升级**：注入靠的是启动器在自身进程里设环境变量 + App 读
+> `QODER_CLI_PATH`/`QODERCLI_PATH` 这两个挂点，与 App 版本解耦。升级后若失效，
+> 原因是 App 不再读这两个挂点（与注入方式无关）—— 用启动器起一次、看
+> `src/logs/` 有没有新日志即可确认。
 >
 > **macOS 平台特殊说明**：千问办公的 `PATH` 环境变量被限制为 `/usr/bin:/bin:/usr/sbin:/sbin`，不含 `/opt/homebrew/bin`，因此 shell wrapper（`src/bridge-shim-wrapper.sh`）会显式查找 node 和 claude 的完整路径。
 
