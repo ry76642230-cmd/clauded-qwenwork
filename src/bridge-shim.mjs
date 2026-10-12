@@ -69,6 +69,46 @@ const ledger = (entry) => {
   try { appendFileSync(LEDGER_FILE, JSON.stringify({ ts: Date.now(), ...entry }) + '\n'); } catch {}
 };
 
+// ---------- Hub 模型清单（让千问办公的模型选择器直接列出 Hub 上的模型）----------
+// 链路：千问办公 → shim → claude → 8820 翻译层 → Hub。最终选择由 app 的 set_model 决定，
+// claude 不校验模型名，8820 会把 Hub 已知模型原样透传，所以这里把 Hub 的清单报给 app，
+// 下拉里点谁就是谁；取不到时退回 claude 自己的模型列表 / 合成条目（原行为）。
+const HUB_LIST_URL = (process.env.QODER_BRIDGE_HUB_URL || process.env.HUB_BASE_URL
+  || process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:8820').replace(/\/+$/, '');
+let HUB_MODEL_LIST = [];
+async function loadHubModels() {
+  try {
+    const res = await fetch(HUB_LIST_URL + '/v1/models', { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) { log('HUB-MODELS', 'GET /v1/models -> ' + res.status); return; }
+    const body = await res.json();
+    let current = BRIDGE_MODEL || '';
+    try {
+      const hr = await fetch(HUB_LIST_URL + '/health', { signal: AbortSignal.timeout(2000) });
+      if (hr.ok) { const hb = await hr.json(); if (hb && hb.model) current = String(hb.model); }
+    } catch {}
+    const list = (Array.isArray(body.data) ? body.data : [])
+      .filter((m) => m && m.id)
+      .map((m, i) => {
+        const vision = !!(m.supports_vision ?? m.vision);
+        return {
+          value: String(m.id),
+          displayName: m.name || String(m.id),
+          description: m.description || 'WorkBuddy Hub',
+          modelId: String(m.id),
+          source: 'system',
+          isDefault: current ? String(m.id) === current : i === 0,
+          is_vl: vision,
+          capabilities: { vision },
+        };
+      });
+    if (list.length) HUB_MODEL_LIST = list;
+    log('HUB-MODELS', 'loaded ' + list.length + ' models from ' + HUB_LIST_URL);
+  } catch (e) {
+    log('HUB-MODELS', 'unavailable: ' + (e?.message ?? String(e)));
+  }
+}
+await loadHubModels();
+
 // ---------- 协议常量 ----------
 const controlResponse = (requestId, response) =>
   JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } }) + '\n';
@@ -336,7 +376,9 @@ function runInternal() {
     let resp;
     switch (subtype) {
       case 'initialize': resp = INIT_RESPONSE_FALLBACK(); break;
-      case 'get_models': resp = MODELS_FALLBACK(); break;
+      case 'get_models':
+        resp = HUB_MODEL_LIST.length ? { models: HUB_MODEL_LIST } : MODELS_FALLBACK();
+        break;
       default: resp = {};
     }
     process.stdout.write(controlResponse(msg.request_id, resp));
@@ -544,6 +586,7 @@ function runSession(parsed) {
     switch (subtype) {
       case 'initialize': return INIT_RESPONSE_FALLBACK();
       case 'get_models':
+        if (HUB_MODEL_LIST.length) return { models: HUB_MODEL_LIST };
         if (Array.isArray(claudeModels) && claudeModels.length > 0) {
           return { models: claudeModels.map((m, i) => ({
             value: m.value ?? m.id ?? String(m),

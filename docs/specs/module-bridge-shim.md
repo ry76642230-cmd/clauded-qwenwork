@@ -247,3 +247,20 @@ spawn 前检测命令行总长度，超 8000 字符时记日志 `SPAWN-WARN` 并
 
 - 内部查询：initialize+get_models 应答、exit 0 ✓
 - 真实会话两轮：initialize 应答 → user×2 → result×2（同 session）→ exit 0，init 注入 protocol_version ✓
+
+## 坑 19：让千问办公的模型下拉真正能切模型（2026-10-12）
+
+- **现象**：千问办公里点模型下拉 / 敲 `/model` 不生效，请求永远走 Hub 默认模型。
+- **根因**：① app spawn shim 的 argv 里**不含 `--model`**（实测只有 `--print/--output-format/
+  --input-format/--session-id/--permission-mode/--include-partial-messages`）；② shim 的
+  `get_models` 返回的是 **claude 自己的模型列表**（下拉是摆设）；③ 8820 翻译层的
+  `pickModel()` 把任何请求模型改写成 `DEFAULT_MODEL`。
+- **实测关键**：`claude --model <任意名>` **不校验模型名**，会把该名字原样放进请求体
+  （翻译层日志 `{"model":"glm-5.3","to":...}`）。所以只要翻译层认这个名字，链路就通。
+- **做法**：shim 启动时（top-level await）拉 `<QODER_BRIDGE_HUB_URL | HUB_BASE_URL |
+  ANTHROPIC_BASE_URL | http://127.0.0.1:8820>/v1/models`，把 Hub 清单作为 `get_models`
+  的应答（`is_vl` 取自 Hub 的 `supports_vision`，`isDefault` 取自翻译层 `/health` 的
+  `model`，即当前真正在用的模型）；取不到时退回 claude 的模型列表 / 合成条目。
+  模型切换走 app 的 `set_model` → shim 原生转发给 claude → 8820 原样透传到 Hub。
+- **验证**：`node src/bridge-shim.test.mjs` 三项（新增测试 3 用本地假 Hub 断言清单与 `is_vl`）；
+  真实默认路径实测 shim 报出 16 个 Hub 模型、默认档 = 翻译层当前模型。

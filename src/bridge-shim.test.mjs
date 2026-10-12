@@ -1,6 +1,7 @@
 // bridge-shim.test.mjs — 密闭测试：用 mock-claude.mjs 替身验证 shim v2 的翻译与双向桥接
 // 运行：node src/bridge-shim.test.mjs（不消耗任何 API 额度）
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
@@ -24,7 +25,7 @@ async function t1_internal() {
     '--tools', '', '--disallowed-tools', '*',
   ], {
     cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK, MOCK_SPAWN_MARKER: marker },
+    env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK, MOCK_SPAWN_MARKER: marker, QODER_BRIDGE_HUB_URL: 'http://127.0.0.1:9' },
   });
   const responses = [];
   const done = new Promise((resolve) => {
@@ -72,7 +73,7 @@ async function t2_session() {
     '--setting-sources', '', '--disable-builtin-skills', '--strict-mcp-config',
     '--mcp-config', '{"mcpServers":{"qw-builtin":{"type":"http","url":"http://127.0.0.1:54365/x"}}}',
   ];
-  const c = spawn('node', [SHIM, ...argv], { cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK } });
+  const c = spawn('node', [SHIM, ...argv], { cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK, QODER_BRIDGE_HUB_URL: 'http://127.0.0.1:9' } });
   const SID = '12345678-1234-1234-1234-123456789abc';
   const userMsg = (text) => JSON.stringify({ type: 'user', session_id: SID, message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n';
 
@@ -132,9 +133,9 @@ async function t2_session() {
   ok(Array.isArray(ir.skills), 'initialize 合并注入 skills');
   ok(Array.isArray(ir.commands) && ir.commands.some((x) => x.name === 'mock-cmd'), 'initialize 透传 claude commands');
 
-  // ---- get_models（claude Unsupported → shim 用 claude initialize models 合成）----
+  // ---- get_models（Hub 不可达时的兜底：claude initialize.models → shim 合成）----
   ok(seen.modelsResp?.subtype === 'success', 'get_models 兜底合成 success');
-  ok(JSON.stringify(seen.modelsResp?.response?.models ?? []).includes('claude-mock-1'), 'get_models 由 claude initialize.models 映射');
+  ok(JSON.stringify(seen.modelsResp?.response?.models ?? []).includes('claude-mock-1'), 'get_models 兜底：Hub 不可达时映射 claude initialize.models');
 
   // ---- set_permission_mode 转发 ----
   ok(seen.pmResp?.subtype === 'success' && seen.pmResp?.response?.mode === 'plan', 'set_permission_mode 原生转发生效');
@@ -192,7 +193,56 @@ async function t2_session() {
   rmSync(workdir, { recursive: true, force: true });
 }
 
+
+// ---------- 测试 3：Hub 可达时，get_models 直接给出 Hub 模型清单 ----------
+async function t3_hub_models() {
+  console.log('\n===== 3. Hub 模型清单：get_models 直出 Hub 模型 =====');
+  const models = [
+    { id: 'fake-hub-a', name: 'Fake A', description: 'a', supports_vision: true },
+    { id: 'fake-hub-b', name: 'Fake B', description: 'b', supports_vision: false },
+  ];
+  const srv = createServer((req, res) => {
+    if ((req.url || '').indexOf('/v1/models') === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ object: 'list', data: models }));
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end('{}');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const c = spawn('node', [SHIM,
+    '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
+    '--tools', '', '--disallowed-tools', '*',
+  ], {
+    cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK, QODER_BRIDGE_HUB_URL: 'http://127.0.0.1:' + port },
+  });
+  let modelsResp = null;
+  const done = new Promise((resolve) => {
+    const rl = createInterface({ input: c.stdout, crlfDelay: Infinity });
+    c.stdin.write(JSON.stringify({ type: 'control_request', request_id: 't3-models', request: { type: 'get_models', subtype: 'get_models' } }) + '\n');
+    rl.on('line', (line) => {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type !== 'control_response') return;
+        modelsResp = msg.response?.response ?? null;
+        c.stdin.end();
+        resolve();
+      } catch {}
+    });
+    c.on('exit', resolve);
+    setTimeout(resolve, 8000);
+  });
+  await done;
+  const list = modelsResp?.models ?? [];
+  ok(list.length === 2, 'get_models 直出 Hub 清单条数 (got ' + list.length + ')');
+  ok(list.map((m) => m.value).join(',') === 'fake-hub-a,fake-hub-b', 'Hub 模型名原样透出 (got ' + list.map((m) => m.value).join(',') + ')');
+  ok(list[0]?.is_vl === true && list[1]?.is_vl === false, 'is_vl 跟随 Hub supports_vision');
+  srv.close();
+}
 await t1_internal();
 await t2_session();
+await t3_hub_models();
 console.log(`\n===== 结果: ${failures === 0 ? '全部通过' : failures + ' 项失败'} =====`);
 process.exit(failures === 0 ? 0 : 1);
