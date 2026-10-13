@@ -73,39 +73,70 @@ const ledger = (entry) => {
 // 链路：千问办公 → shim → claude → 8820 翻译层 → Hub。最终选择由 app 的 set_model 决定，
 // claude 不校验模型名，8820 会把 Hub 已知模型原样透传，所以这里把 Hub 的清单报给 app，
 // 下拉里点谁就是谁；取不到时退回 claude 自己的模型列表 / 合成条目（原行为）。
-const HUB_LIST_URL = (process.env.QODER_BRIDGE_HUB_URL || process.env.HUB_BASE_URL
-  || process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:8820').replace(/\/+$/, '');
-let HUB_MODEL_LIST = [];
-async function loadHubModels() {
-  try {
-    const res = await fetch(HUB_LIST_URL + '/v1/models', { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) { log('HUB-MODELS', 'GET /v1/models -> ' + res.status); return; }
-    const body = await res.json();
-    let current = BRIDGE_MODEL || '';
-    try {
-      const hr = await fetch(HUB_LIST_URL + '/health', { signal: AbortSignal.timeout(2000) });
-      if (hr.ok) { const hb = await hr.json(); if (hb && hb.model) current = String(hb.model); }
-    } catch {}
-    const list = (Array.isArray(body.data) ? body.data : [])
-      .filter((m) => m && m.id)
-      .map((m, i) => {
-        const vision = !!(m.supports_vision ?? m.vision);
-        return {
-          value: String(m.id),
-          displayName: m.name || String(m.id),
-          description: m.description || 'WorkBuddy Hub',
-          modelId: String(m.id),
-          source: 'system',
-          isDefault: current ? String(m.id) === current : i === 0,
-          is_vl: vision,
-          capabilities: { vision },
-        };
-      });
-    if (list.length) HUB_MODEL_LIST = list;
-    log('HUB-MODELS', 'loaded ' + list.length + ' models from ' + HUB_LIST_URL);
-  } catch (e) {
-    log('HUB-MODELS', 'unavailable: ' + (e?.message ?? String(e)));
+// 候选来源按优先级：显式覆盖 → claude 实际用的翻译层 → 本机默认翻译层 → Hub 直连。
+// 注意 HUB_BASE_URL 指的是 Hub 本身（要鉴权），所以请求必须带上 HUB_API_KEY，
+// 否则会拿到 401 而误判成「没有模型」。逐个试，第一个成功且非空的胜出。
+const HUB_LIST_URLS = (() => {
+  // 显式指定即独占（测试与排障时不想被默认地址干扰）
+  const explicit = String(process.env.QODER_BRIDGE_HUB_URL || '').replace(/\/+$/, '');
+  if (explicit) return [explicit];
+  const seen = new Set();
+  const out = [];
+  for (const u of [process.env.QODER_BRIDGE_HUB_URL, process.env.ANTHROPIC_BASE_URL,
+                   'http://127.0.0.1:8820', process.env.HUB_BASE_URL]) {
+    const v = String(u || '').replace(/\/+$/, '');
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
   }
+  return out;
+})();
+const HUB_LIST_KEY = String(process.env.HUB_API_KEY || '').trim();
+let HUB_MODEL_LIST = [];
+let HUB_LIST_URL = HUB_LIST_URLS[0] || 'http://127.0.0.1:8820';
+
+async function fetchJson(url, ms) {
+  const headers = HUB_LIST_KEY ? { Authorization: 'Bearer ' + HUB_LIST_KEY } : {};
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(ms) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return await res.json();
+}
+
+async function loadHubModels() {
+  for (const base of HUB_LIST_URLS) {
+    try {
+      const body = await fetchJson(base + '/v1/models', 3000);
+      const list = (Array.isArray(body.data) ? body.data : [])
+        .filter((m) => m && m.id)
+        .map((m, i) => {
+          const vision = !!(m.supports_vision ?? m.vision);
+          return {
+            value: String(m.id),
+            displayName: m.name || String(m.id),
+            description: m.description || 'WorkBuddy Hub',
+            modelId: String(m.id),
+            source: 'system',
+            isDefault: false,
+            is_vl: vision,
+            capabilities: { vision },
+          };
+        });
+      if (!list.length) { log('HUB-MODELS', base + ' 返回空清单'); continue; }
+      let current = BRIDGE_MODEL || '';
+      try {
+        const hb = await fetchJson(base + '/health', 2000);
+        if (hb && hb.model) current = String(hb.model);
+      } catch {}
+      for (const m of list) {
+        m.isDefault = current ? m.value === current : m === list[0];
+      }
+      HUB_MODEL_LIST = list;
+      HUB_LIST_URL = base;
+      log('HUB-MODELS', 'loaded ' + list.length + ' models from ' + base);
+      return;
+    } catch (e) {
+      log('HUB-MODELS', base + ' 不可用: ' + (e?.message ?? String(e)));
+    }
+  }
+  log('HUB-MODELS', '所有来源都不可用，退回 claude 的模型列表');
 }
 await loadHubModels();
 

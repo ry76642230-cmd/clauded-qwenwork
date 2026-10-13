@@ -203,6 +203,7 @@ async function t3_hub_models() {
   ];
   const srv = createServer((req, res) => {
     if ((req.url || '').indexOf('/v1/models') === 0) {
+      if (req.headers.authorization !== 'Bearer test-key') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{}'); }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ object: 'list', data: models }));
     }
@@ -216,7 +217,7 @@ async function t3_hub_models() {
     '--tools', '', '--disallowed-tools', '*',
   ], {
     cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK, QODER_BRIDGE_HUB_URL: 'http://127.0.0.1:' + port },
+    env: { ...process.env, QODER_BRIDGE_CLAUDE: MOCK, HUB_API_KEY: 'test-key', QODER_BRIDGE_HUB_URL: 'http://127.0.0.1:' + port },
   });
   let modelsResp = null;
   const done = new Promise((resolve) => {
