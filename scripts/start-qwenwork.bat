@@ -29,7 +29,17 @@ echo.
 
 REM ---------- 1. 选最新版本目录 ----------
 set "QW_EXE="
-for /f "delims=" %%D in ('dir /b /ad /o-n "%QWENWORK_ROOT%" 2^>nul') do if not defined QW_EXE if exist "%QWENWORK_ROOT%\%%D\QwenWorkCN.exe" set "QW_EXE=%QWENWORK_ROOT%\%%D\QwenWorkCN.exe"
+rem Pinned version for this launcher (override with: set QWENWORK_VERSION=x.y.z-build)
+if not defined QWENWORK_VERSION set "QWENWORK_VERSION=1.2.5-26092902"
+if exist "%QWENWORK_ROOT%\%QWENWORK_VERSION%\QwenWorkCN.exe" set "QW_EXE=%QWENWORK_ROOT%\%QWENWORK_VERSION%\QwenWorkCN.exe"
+rem Otherwise fall back to updater.cfg currentVersion
+set "QW_VER="
+if not defined QW_EXE if exist "%QWENWORK_ROOT%\updater.cfg" for /f "tokens=2 delims=:," %%A in ('findstr /i currentVersion "%QWENWORK_ROOT%\updater.cfg" 2^>nul') do set "QW_VER=%%~A"
+if defined QW_VER set QW_VER=%QW_VER:"=%
+if defined QW_VER set "QW_VER=%QW_VER: =%"
+if not defined QW_EXE if defined QW_VER if exist "%QWENWORK_ROOT%\%QW_VER%\QwenWorkCN.exe" set "QW_EXE=%QWENWORK_ROOT%\%QW_VER%\QwenWorkCN.exe"
+rem Last resort: newest version dir
+if not defined QW_EXE for /f "delims=" %%D in ('dir /b /ad /o-n "%QWENWORK_ROOT%" 2^>nul') do if not defined QW_EXE if exist "%QWENWORK_ROOT%\%%D\QwenWorkCN.exe" set "QW_EXE=%QWENWORK_ROOT%\%%D\QwenWorkCN.exe"
 if defined QW_EXE goto :got_exe
 echo [X] 在 %QWENWORK_ROOT% 下找不到 QwenWorkCN.exe
 echo     若装在别处, 先设: set QWENWORK_ROOT=你的安装根目录
