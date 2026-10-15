@@ -30,7 +30,8 @@ echo.
 REM ---------- 1. 选最新版本目录 ----------
 set "QW_EXE="
 rem Pinned version for this launcher (override with: set QWENWORK_VERSION=x.y.z-build)
-if not defined QWENWORK_VERSION set "QWENWORK_VERSION=1.2.5-26092902"
+rem Optional pin: set QWENWORK_VERSION=x.y.z-build to force a specific version (rollback)
+rem Default: empty -> follow updater.cfg currentVersion, then newest version dir
 if exist "%QWENWORK_ROOT%\%QWENWORK_VERSION%\QwenWorkCN.exe" set "QW_EXE=%QWENWORK_ROOT%\%QWENWORK_VERSION%\QwenWorkCN.exe"
 rem Otherwise fall back to updater.cfg currentVersion
 set "QW_VER="
