@@ -49,6 +49,15 @@ pause
 exit /b 1
 
 :got_exe
+rem ---------- 1.5 apply 1.3.x harness compat patch (idempotent) ----------
+for %%V in ("%QW_EXE%") do set "QW_EXE_DIR=%%~dpV"
+for %%V in ("%QW_EXE_DIR%.") do set "QW_VERDIR=%%~nxV"
+if not defined QW_VERDIR goto :skip_harness_patch
+if not exist "%REPO_ROOT%\scripts\patch-qwenwork-harness.mjs" goto :skip_harness_patch
+node "%REPO_ROOT%\scripts\patch-qwenwork-harness.mjs" --asar "%QWENWORK_ROOT%\%QW_VERDIR%\resources\app.asar" >nul 2>nul
+if errorlevel 2 echo     [X] harness patch points not matched - need re-RE, see docs\COMPAT-1.3.x.md
+if not errorlevel 1 echo     [OK] harness compat patch applied/present
+:skip_harness_patch
 echo [1/4] 程序 : %QW_EXE%
 
 REM ---------- 2. 注入桥接环境变量 ----------
